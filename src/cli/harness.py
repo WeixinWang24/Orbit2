@@ -15,6 +15,7 @@ from src.capability.tools import (
     ReplaceInFileTool,
     WriteFileTool,
 )
+from src.cli.composer import ComposerAction, PageDownAction, PageUpAction
 from src.cli.style import (
     ACCENT_ASSISTANT,
     ACCENT_ERROR,
@@ -69,7 +70,10 @@ def _term_width() -> int:
 
 
 def _read_input(prompt: str) -> str:
-    """Read user input with CJK-aware composer when on a real TTY."""
+    """Read user input with CJK-aware composer when on a real TTY.
+
+    May raise PageUpAction or PageDownAction from the composer.
+    """
     if sys.stdin.isatty():
         try:
             from src.cli.composer import read_line
@@ -82,6 +86,29 @@ def _read_input(prompt: str) -> str:
 def _write(s: str) -> None:
     sys.stdout.write(s)
     sys.stdout.flush()
+
+
+def _switch_session_relative(
+    manager: SessionManager, current_id: str, *, direction: ComposerAction,
+) -> str | None:
+    """Move to previous (PageUp) or next (PageDown) session. Returns new session_id or None."""
+    sessions = manager.list_sessions()
+    if len(sessions) <= 1:
+        return None
+    current_idx = next(
+        (i for i, s in enumerate(sessions) if s.session_id == current_id), -1,
+    )
+    if current_idx < 0:
+        return None
+    if isinstance(direction, PageUpAction):
+        new_idx = current_idx - 1
+    elif isinstance(direction, PageDownAction):
+        new_idx = current_idx + 1
+    else:
+        return None
+    if 0 <= new_idx < len(sessions):
+        return sessions[new_idx].session_id
+    return None
 
 
 def _run_interactive(manager: SessionManager, session_id: str) -> None:
@@ -109,6 +136,19 @@ def _run_interactive(manager: SessionManager, session_id: str) -> None:
         except (EOFError, KeyboardInterrupt):
             _write(f"\n{DIM}Bye.{RESET}\n")
             return
+        except ComposerAction as action:
+            new_id = _switch_session_relative(
+                manager, active_session_id, direction=action,
+            )
+            if new_id is not None and new_id != active_session_id:
+                active_session_id = new_id
+                session = manager.get_session(active_session_id)
+                _write(
+                    f"\r{ACCENT_SUCCESS}Switched to{RESET}"
+                    f" {ACCENT_SYSTEM}{active_session_id}{RESET}"
+                    f" {DIM}({len(manager.list_messages(active_session_id))} msgs){RESET}\n"
+                )
+            continue
 
         stripped = user_input.strip()
         if not stripped:
@@ -272,7 +312,7 @@ def _handle_delete_all(manager: SessionManager) -> bool:
         confirmation = _read_input(
             f"  {ACCENT_ERROR}Type 'yes' to confirm:{RESET} "
         )
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, ComposerAction):
         _write(f"\n  {DIM}Cancelled.{RESET}\n\n")
         return False
 

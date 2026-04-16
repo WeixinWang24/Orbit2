@@ -619,3 +619,159 @@ class TestStoreDeleteAll:
         mgr = SessionManager(backend=StreamingDummyBackend(), store=store)
         deleted = mgr.delete_all_sessions()
         assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# CSI escape sequence parsing
+# ---------------------------------------------------------------------------
+
+import os
+
+from src.cli.composer import (
+    ComposerAction,
+    PageDownAction,
+    PageUpAction,
+    _read_csi_sequence,
+)
+
+
+class TestCSISequenceParsing:
+    """Verify _read_csi_sequence fully consumes escape sequences."""
+
+    def _make_fd(self, data: bytes) -> int:
+        """Create a pipe fd preloaded with data."""
+        r, w = os.pipe()
+        os.write(w, data)
+        os.close(w)
+        return r
+
+    def test_simple_letter_terminator(self) -> None:
+        # CSI A (Up arrow) — no params, letter terminator
+        fd = self._make_fd(b"A")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == ""
+        assert term == "A"
+
+    def test_number_tilde_page_up(self) -> None:
+        # CSI 5~ (Page Up)
+        fd = self._make_fd(b"5~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "5"
+        assert term == "~"
+
+    def test_number_tilde_page_down(self) -> None:
+        # CSI 6~ (Page Down)
+        fd = self._make_fd(b"6~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "6"
+        assert term == "~"
+
+    def test_number_tilde_delete(self) -> None:
+        # CSI 3~ (Delete)
+        fd = self._make_fd(b"3~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "3"
+        assert term == "~"
+
+    def test_multi_digit_params(self) -> None:
+        # CSI 15~ (F5)
+        fd = self._make_fd(b"15~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "15"
+        assert term == "~"
+
+    def test_semicolon_params(self) -> None:
+        # CSI 1;5C (Ctrl+Right)
+        fd = self._make_fd(b"1;5C")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "1;5"
+        assert term == "C"
+
+    def test_insert_key(self) -> None:
+        # CSI 2~ (Insert) — previously would leak ~
+        fd = self._make_fd(b"2~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "2"
+        assert term == "~"
+
+    def test_no_tilde_leak_for_unknown_sequences(self) -> None:
+        """Verify that unrecognized CSI sequences don't leave bytes unconsumed."""
+        # CSI 24~ (F12) — fully consumed
+        fd = self._make_fd(b"24~")
+        params, term = _read_csi_sequence(fd)
+        os.close(fd)
+        assert params == "24"
+        assert term == "~"
+
+
+# ---------------------------------------------------------------------------
+# Page Up / Page Down session switching
+# ---------------------------------------------------------------------------
+
+from src.cli.harness import _switch_session_relative
+
+
+class TestPageUpDownSessionSwitch:
+    def test_page_up_moves_to_previous(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # list_sessions returns newest first: [s2, s1]
+        # page up from s1 (index 1) → s2 (index 0)
+        result = _switch_session_relative(streaming_manager, s1.session_id, direction=PageUpAction())
+        assert result == s2.session_id
+
+    def test_page_down_moves_to_next(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # list_sessions: [s2, s1]. page down from s2 (index 0) → s1 (index 1)
+        result = _switch_session_relative(streaming_manager, s2.session_id, direction=PageDownAction())
+        assert result == s1.session_id
+
+    def test_page_up_at_first_returns_none(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # s2 is at index 0 (newest). page up → out of range
+        result = _switch_session_relative(streaming_manager, s2.session_id, direction=PageUpAction())
+        assert result is None
+
+    def test_page_down_at_last_returns_none(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # s1 is at index 1 (oldest). page down → out of range
+        result = _switch_session_relative(streaming_manager, s1.session_id, direction=PageDownAction())
+        assert result is None
+
+    def test_single_session_returns_none(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        assert _switch_session_relative(streaming_manager, s1.session_id, direction=PageUpAction()) is None
+        assert _switch_session_relative(streaming_manager, s1.session_id, direction=PageDownAction()) is None
+
+    def test_unknown_session_returns_none(self, streaming_manager: SessionManager) -> None:
+        streaming_manager.create_session()
+        result = _switch_session_relative(streaming_manager, "nonexistent", direction=PageUpAction())
+        assert result is None
+
+
+class TestComposerActionTypes:
+    def test_page_up_is_composer_action(self) -> None:
+        assert issubclass(PageUpAction, ComposerAction)
+
+    def test_page_down_is_composer_action(self) -> None:
+        assert issubclass(PageDownAction, ComposerAction)
+
+    def test_actions_are_exceptions(self) -> None:
+        assert issubclass(ComposerAction, Exception)
+        # Ensure they can be raised and caught
+        with pytest.raises(PageUpAction):
+            raise PageUpAction()
+        with pytest.raises(PageDownAction):
+            raise PageDownAction()
+        with pytest.raises(ComposerAction):
+            raise PageUpAction()
