@@ -112,6 +112,19 @@ class SQLiteSessionStore(SessionStore):
         ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
+    def delete_all_sessions(self) -> int:
+        cursor = self._conn.cursor()
+        cursor.execute("BEGIN")
+        try:
+            cursor.execute("DELETE FROM messages")
+            cursor.execute("DELETE FROM sessions")
+            deleted = cursor.rowcount
+            cursor.execute("COMMIT")
+        except Exception:
+            cursor.execute("ROLLBACK")
+            raise
+        return deleted
+
     def close(self) -> None:
         self._conn.close()
 

@@ -61,6 +61,9 @@ class SessionManager:
     def list_messages(self, session_id: str) -> list[ConversationMessage]:
         return self._store.list_messages(session_id)
 
+    def delete_all_sessions(self) -> int:
+        return self._store.delete_all_sessions()
+
     def run_turn(
         self,
         session_id: str,

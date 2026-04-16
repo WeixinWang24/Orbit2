@@ -394,3 +394,228 @@ class TestCLIHeader:
         captured = capsys.readouterr()
         # Clear screen sequence should be present in raw output
         assert "\x1b[2J" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Session navigation: /sessions, /switch, /new
+# ---------------------------------------------------------------------------
+
+from src.cli.harness import _show_sessions, _handle_switch, _handle_delete_all
+
+
+class TestSessionNavigation:
+    def test_sessions_lists_all(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        _show_sessions(streaming_manager, s1.session_id)
+
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert s1.session_id in plain
+        assert s2.session_id in plain
+        assert "Sessions" in plain
+
+    def test_sessions_marks_active(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        _show_sessions(streaming_manager, s1.session_id)
+
+        captured = capsys.readouterr()
+        # Active marker (▶) should appear near the active session
+        assert "\u25b6" in captured.out
+
+    def test_sessions_empty(self, tmp_path: Path, capsys) -> None:
+        store = SQLiteSessionStore(tmp_path / "empty.db")
+        mgr = SessionManager(backend=StreamingDummyBackend(), store=store)
+        _show_sessions(mgr, "nonexistent")
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "no sessions" in plain
+
+    def test_switch_by_index(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # list_sessions returns newest first, so s2=index 1, s1=index 2
+        result = _handle_switch(streaming_manager, s1.session_id, "/switch 1")
+        assert result == s2.session_id
+
+    def test_switch_by_session_id(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        result = _handle_switch(streaming_manager, s1.session_id, f"/switch {s2.session_id}")
+        assert result == s2.session_id
+
+    def test_switch_by_prefix(self, streaming_manager: SessionManager) -> None:
+        s1 = streaming_manager.create_session()
+        # Use a unique prefix (first 12 chars should be unique enough)
+        prefix = s1.session_id[:16]
+        result = _handle_switch(streaming_manager, "other", f"/switch {prefix}")
+        assert result == s1.session_id
+
+    def test_switch_no_arg(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        result = _handle_switch(streaming_manager, s1.session_id, "/switch")
+        assert result is None
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "Usage" in plain
+
+    def test_switch_out_of_range(self, streaming_manager: SessionManager, capsys) -> None:
+        streaming_manager.create_session()
+        result = _handle_switch(streaming_manager, "x", "/switch 99")
+        assert result is None
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "out of range" in plain
+
+    def test_switch_not_found(self, streaming_manager: SessionManager, capsys) -> None:
+        streaming_manager.create_session()
+        result = _handle_switch(streaming_manager, "x", "/switch nonexistent_id")
+        assert result is None
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "not found" in plain
+
+    def test_switch_interactive(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        # Interact on s1, switch to s2, send a message, quit
+        inputs = iter(["hello", f"/switch {s2.session_id}", "world", "/quit"])
+        with patch("builtins.input", side_effect=inputs):
+            _run_interactive(streaming_manager, s1.session_id)
+
+        # s1 should have 2 messages (user + assistant for "hello")
+        msgs_s1 = streaming_manager.list_messages(s1.session_id)
+        assert len(msgs_s1) == 2
+        assert msgs_s1[0].content == "hello"
+
+        # s2 should have 2 messages (user + assistant for "world")
+        msgs_s2 = streaming_manager.list_messages(s2.session_id)
+        assert len(msgs_s2) == 2
+        assert msgs_s2[0].content == "world"
+
+    def test_new_session_command(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        inputs = iter(["/new", "hello", "/quit"])
+        with patch("builtins.input", side_effect=inputs):
+            _run_interactive(streaming_manager, s1.session_id)
+
+        # Original session should be empty
+        assert len(streaming_manager.list_messages(s1.session_id)) == 0
+        # There should now be 2 sessions (original + new)
+        sessions = streaming_manager.list_sessions()
+        assert len(sessions) == 2
+        # The new session (not s1) should have the message
+        new_session = [s for s in sessions if s.session_id != s1.session_id][0]
+        msgs = streaming_manager.list_messages(new_session.session_id)
+        assert len(msgs) == 2
+        assert msgs[0].content == "hello"
+
+
+# ---------------------------------------------------------------------------
+# /delete-all
+# ---------------------------------------------------------------------------
+
+class TestDeleteAll:
+    def test_delete_all_confirmed(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        # Add a message so there's something to delete
+        streaming_manager.run_turn(s1.session_id, "test message")
+        assert len(streaming_manager.list_sessions()) == 1
+
+        inputs = iter(["yes"])
+        with patch("builtins.input", side_effect=inputs):
+            _handle_delete_all(streaming_manager)
+
+        assert len(streaming_manager.list_sessions()) == 0
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "Deleted 1 session" in plain
+
+    def test_delete_all_cancelled(self, streaming_manager: SessionManager, capsys) -> None:
+        s1 = streaming_manager.create_session()
+        inputs = iter(["no"])
+        with patch("builtins.input", side_effect=inputs):
+            _handle_delete_all(streaming_manager)
+
+        # Session should still exist
+        assert len(streaming_manager.list_sessions()) == 1
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "Cancelled" in plain
+
+    def test_delete_all_empty_input_cancels(self, streaming_manager: SessionManager, capsys) -> None:
+        streaming_manager.create_session()
+        inputs = iter([""])
+        with patch("builtins.input", side_effect=inputs):
+            _handle_delete_all(streaming_manager)
+
+        assert len(streaming_manager.list_sessions()) == 1
+
+    def test_delete_all_eof_cancels(self, streaming_manager: SessionManager, capsys) -> None:
+        streaming_manager.create_session()
+        with patch("builtins.input", side_effect=EOFError):
+            _handle_delete_all(streaming_manager)
+
+        assert len(streaming_manager.list_sessions()) == 1
+
+    def test_delete_all_no_sessions(self, tmp_path: Path, capsys) -> None:
+        store = SQLiteSessionStore(tmp_path / "empty.db")
+        mgr = SessionManager(backend=StreamingDummyBackend(), store=store)
+        _handle_delete_all(mgr)
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "No sessions to delete" in plain
+
+    def test_delete_all_shows_warning(self, streaming_manager: SessionManager, capsys) -> None:
+        streaming_manager.create_session()
+        streaming_manager.create_session()
+        streaming_manager.create_session()
+        inputs = iter(["no"])
+        with patch("builtins.input", side_effect=inputs):
+            _handle_delete_all(streaming_manager)
+
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "WARNING" in plain
+        assert "3" in plain  # should show count
+
+    def test_delete_all_interactive(self, streaming_manager: SessionManager, capsys) -> None:
+        """Full interactive flow: create sessions, /delete-all with yes, verify fresh session."""
+        s1 = streaming_manager.create_session()
+        s2 = streaming_manager.create_session()
+        inputs = iter(["/delete-all", "yes", "/sessions", "/quit"])
+        with patch("builtins.input", side_effect=inputs):
+            _run_interactive(streaming_manager, s1.session_id)
+
+        captured = capsys.readouterr()
+        plain = _strip_ansi(captured.out)
+        assert "Deleted" in plain
+        assert "New session" in plain
+
+
+# ---------------------------------------------------------------------------
+# Store layer: delete_all_sessions
+# ---------------------------------------------------------------------------
+
+class TestStoreDeleteAll:
+    def test_delete_all_removes_sessions_and_messages(self, tmp_path: Path) -> None:
+        store = SQLiteSessionStore(tmp_path / "test.db")
+        mgr = SessionManager(backend=StreamingDummyBackend(), store=store)
+        s1 = mgr.create_session()
+        s2 = mgr.create_session()
+        mgr.run_turn(s1.session_id, "msg1")
+        mgr.run_turn(s2.session_id, "msg2")
+
+        assert len(mgr.list_sessions()) == 2
+        deleted = mgr.delete_all_sessions()
+        assert deleted == 2
+        assert len(mgr.list_sessions()) == 0
+        assert len(mgr.list_messages(s1.session_id)) == 0
+        assert len(mgr.list_messages(s2.session_id)) == 0
+
+    def test_delete_all_empty_store(self, tmp_path: Path) -> None:
+        store = SQLiteSessionStore(tmp_path / "test.db")
+        mgr = SessionManager(backend=StreamingDummyBackend(), store=store)
+        deleted = mgr.delete_all_sessions()
+        assert deleted == 0

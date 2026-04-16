@@ -20,3 +20,8 @@ class SessionStore(ABC):
 
     @abstractmethod
     def list_messages(self, session_id: str) -> list[ConversationMessage]: ...
+
+    @abstractmethod
+    def delete_all_sessions(self) -> int:
+        """Delete all sessions and their messages. Returns count of deleted sessions."""
+        ...

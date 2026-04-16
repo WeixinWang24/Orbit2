@@ -79,22 +79,27 @@ def _read_input(prompt: str) -> str:
     return input(prompt)
 
 
+def _write(s: str) -> None:
+    sys.stdout.write(s)
+    sys.stdout.flush()
+
+
 def _run_interactive(manager: SessionManager, session_id: str) -> None:
-    session = manager.get_session(session_id)
+    active_session_id = session_id
+    session = manager.get_session(active_session_id)
     width = _term_width()
 
-    sys.stdout.write(
+    _write(
         f"{ACCENT_SUCCESS}{BOLD}Orbit2{RESET}"
         f" {ACCENT_MUTED}\u2502{RESET}"
-        f" {ACCENT_SYSTEM}{session_id}{RESET}"
+        f" {ACCENT_SYSTEM}{active_session_id}{RESET}"
         f" {ACCENT_MUTED}\u2502{RESET}"
         f" {DIM}{session.backend_name}{RESET}\n"
     )
-    sys.stdout.write(divider(width) + "\n")
-    sys.stdout.write(
-        f"{DIM}Commands: /quit  /history  /clear{RESET}\n\n"
+    _write(divider(width) + "\n")
+    _write(
+        f"{DIM}Commands: /quit  /history  /clear  /sessions  /switch  /new  /delete-all{RESET}\n\n"
     )
-    sys.stdout.flush()
 
     prompt = f"{ACCENT_USER}{BOLD}you \u276f{RESET} "
 
@@ -102,27 +107,61 @@ def _run_interactive(manager: SessionManager, session_id: str) -> None:
         try:
             user_input = _read_input(prompt)
         except (EOFError, KeyboardInterrupt):
-            sys.stdout.write(f"\n{DIM}Bye.{RESET}\n")
-            sys.stdout.flush()
+            _write(f"\n{DIM}Bye.{RESET}\n")
             return
 
         stripped = user_input.strip()
         if not stripped:
             continue
         if stripped == "/quit":
-            sys.stdout.write(f"{DIM}Bye.{RESET}\n")
-            sys.stdout.flush()
+            _write(f"{DIM}Bye.{RESET}\n")
             return
         if stripped == "/history":
-            _show_history(manager, session_id)
+            _show_history(manager, active_session_id)
             continue
         if stripped == "/clear":
-            sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.flush()
+            _write("\x1b[2J\x1b[H")
+            continue
+        if stripped == "/sessions":
+            _show_sessions(manager, active_session_id)
+            continue
+        if stripped.startswith("/switch"):
+            result = _handle_switch(manager, active_session_id, stripped)
+            if result is not None and result != active_session_id:
+                active_session_id = result
+                session = manager.get_session(active_session_id)
+                _write(
+                    f"{ACCENT_SUCCESS}Switched to{RESET}"
+                    f" {ACCENT_SYSTEM}{active_session_id}{RESET}"
+                    f" {DIM}({len(manager.list_messages(active_session_id))} msgs){RESET}\n\n"
+                )
+            elif result == active_session_id:
+                _write(f"  {DIM}Already on this session.{RESET}\n")
+            continue
+        if stripped == "/new":
+            # Reload current session from store to get latest system_prompt
+            current = manager.get_session(active_session_id)
+            session = manager.create_session(system_prompt=current.system_prompt)
+            active_session_id = session.session_id
+            _write(
+                f"{ACCENT_SUCCESS}New session{RESET}"
+                f" {ACCENT_SYSTEM}{active_session_id}{RESET}\n\n"
+            )
+            continue
+        if stripped == "/delete-all":
+            deleted = _handle_delete_all(manager)
+            if deleted:
+                # Deletion confirmed — create a fresh session
+                session = manager.create_session(system_prompt=DEFAULT_SYSTEM_PROMPT)
+                active_session_id = session.session_id
+                _write(
+                    f"{ACCENT_SUCCESS}New session{RESET}"
+                    f" {ACCENT_SYSTEM}{active_session_id}{RESET}\n\n"
+                )
             continue
 
-        sys.stdout.write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET} ")
-        sys.stdout.flush()
+        # Regular user input — send to model
+        _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET} ")
 
         last_len = 0
 
@@ -130,43 +169,135 @@ def _run_interactive(manager: SessionManager, session_id: str) -> None:
             nonlocal last_len
             delta = accumulated[last_len:]
             last_len = len(accumulated)
-            sys.stdout.write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
-            sys.stdout.flush()
+            _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
 
-        plan = manager.run_turn(session_id, stripped, on_partial_text=on_partial)
+        plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
         if last_len == 0 and plan.final_text:
-            sys.stdout.write(f"{CONTENT_ASSISTANT}{plan.final_text}{RESET}")
+            _write(f"{CONTENT_ASSISTANT}{plan.final_text}{RESET}")
         if plan.final_text is None and last_len == 0:
-            sys.stdout.write(f"{ACCENT_ERROR}[no response]{RESET}")
+            _write(f"{ACCENT_ERROR}[no response]{RESET}")
 
         if plan.tool_requests:
-            sys.stdout.write("\n")
+            _write("\n")
             for tr in plan.tool_requests:
                 status = "\u2713" if tr.tool_name else "\u2717"
-                sys.stdout.write(
+                _write(
                     f"  {ACCENT_TOOL}{status} {tr.tool_name or 'unknown'}{RESET}"
                     f" {DIM}{tr.tool_call_id or ''}{RESET}\n"
                 )
 
-        sys.stdout.write("\n\n")
-        sys.stdout.flush()
+        _write("\n\n")
+
+
+def _show_sessions(manager: SessionManager, active_session_id: str) -> None:
+    sessions = manager.list_sessions()
+    width = _term_width()
+    if not sessions:
+        _write(f"  {DIM}(no sessions){RESET}\n")
+        return
+
+    _write(f"\n{divider(width)}\n")
+    _write(f"  {ACCENT_SYSTEM}Sessions{RESET} {DIM}({len(sessions)}){RESET}\n")
+    _write(f"{divider(width)}\n")
+
+    for i, s in enumerate(sessions):
+        msg_count = len(manager.list_messages(s.session_id))
+        marker = f"{ACCENT_SUCCESS}\u25b6{RESET} " if s.session_id == active_session_id else "  "
+        _write(
+            f"  {marker}"
+            f"{DIM}{i + 1}.{RESET} "
+            f"{ACCENT_SYSTEM}{s.session_id}{RESET}"
+            f"  {DIM}[{s.backend_name}]{RESET}"
+            f"  {DIM}{msg_count} msgs{RESET}"
+            f"  {DIM}{s.status.value}{RESET}\n"
+        )
+
+    _write(f"{divider(width)}\n")
+    _write(f"  {DIM}/switch <N> or /switch <session_id>{RESET}\n\n")
+
+
+def _handle_switch(
+    manager: SessionManager, current_id: str, command: str,
+) -> str | None:
+    """Parse /switch command and return new session_id, or None on failure."""
+    parts = command.split(None, 1)
+    if len(parts) < 2:
+        _write(f"  {ACCENT_ERROR}Usage: /switch <N> or /switch <session_id>{RESET}\n")
+        return None
+
+    target = parts[1].strip()
+    sessions = manager.list_sessions()
+
+    # Try numeric index first
+    try:
+        idx = int(target)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1].session_id
+        _write(f"  {ACCENT_ERROR}Index out of range (1-{len(sessions)}){RESET}\n")
+        return None
+    except ValueError:
+        pass
+
+    # Try session_id match (prefix or full)
+    matches = [s for s in sessions if s.session_id == target]
+    if not matches:
+        matches = [s for s in sessions if s.session_id.startswith(target)]
+    if len(matches) == 1:
+        return matches[0].session_id
+    if len(matches) > 1:
+        _write(f"  {ACCENT_ERROR}Ambiguous prefix, {len(matches)} matches{RESET}\n")
+        return None
+
+    _write(f"  {ACCENT_ERROR}Session not found: {target}{RESET}\n")
+    return None
+
+
+def _handle_delete_all(manager: SessionManager) -> bool:
+    """Delete all sessions with explicit confirmation. Returns True if deletion was confirmed."""
+    sessions = manager.list_sessions()
+    if not sessions:
+        _write(f"  {DIM}No sessions to delete.{RESET}\n")
+        return False
+
+    count = len(sessions)
+    _write(
+        f"\n  {ACCENT_ERROR}{BOLD}WARNING:{RESET}"
+        f" This will permanently delete {ACCENT_ERROR}{count}{RESET}"
+        f" session(s) and all their messages.\n"
+    )
+    _write(f"  {DIM}This action cannot be undone.{RESET}\n\n")
+
+    try:
+        confirmation = _read_input(
+            f"  {ACCENT_ERROR}Type 'yes' to confirm:{RESET} "
+        )
+    except (EOFError, KeyboardInterrupt):
+        _write(f"\n  {DIM}Cancelled.{RESET}\n\n")
+        return False
+
+    if confirmation.strip() != "yes":
+        _write(f"  {DIM}Cancelled.{RESET}\n\n")
+        return False
+
+    deleted = manager.delete_all_sessions()
+    _write(f"  {ACCENT_SUCCESS}Deleted {deleted} session(s).{RESET}\n\n")
+    return True
 
 
 def _show_history(manager: SessionManager, session_id: str) -> None:
     messages = manager.list_messages(session_id)
     width = _term_width()
     if not messages:
-        sys.stdout.write(f"  {DIM}(empty transcript){RESET}\n")
-        sys.stdout.flush()
+        _write(f"  {DIM}(empty transcript){RESET}\n")
         return
 
-    sys.stdout.write(f"\n{divider(width)}\n")
-    sys.stdout.write(
+    _write(f"\n{divider(width)}\n")
+    _write(
         f"  {ACCENT_SYSTEM}Transcript{RESET}"
         f" {DIM}({len(messages)} messages){RESET}\n"
     )
-    sys.stdout.write(f"{divider(width)}\n")
+    _write(f"{divider(width)}\n")
 
     for msg in messages:
         role = msg.role.value
@@ -187,13 +318,12 @@ def _show_history(manager: SessionManager, session_id: str) -> None:
             label_color = ACCENT_MUTED
             body_color = DIM
 
-        sys.stdout.write(
+        _write(
             f"  {label_color}{BOLD}{role}{RESET}"
             f" {body_color}{content}{RESET}\n"
         )
 
-    sys.stdout.write(f"{divider(width)}\n\n")
-    sys.stdout.flush()
+    _write(f"{divider(width)}\n\n")
 
 
 def main() -> None:
@@ -231,17 +361,16 @@ def main() -> None:
         if args.list_sessions:
             sessions = manager.list_sessions()
             if not sessions:
-                sys.stdout.write(f"{DIM}No sessions.{RESET}\n")
+                _write(f"{DIM}No sessions.{RESET}\n")
             else:
                 for s in sessions:
                     msg_count = len(manager.list_messages(s.session_id))
-                    sys.stdout.write(
+                    _write(
                         f"  {ACCENT_SYSTEM}{s.session_id}{RESET}"
                         f"  {DIM}[{s.backend_name}]{RESET}"
                         f"  {DIM}{msg_count} msgs{RESET}"
                         f"  {DIM}{s.status.value}{RESET}\n"
                     )
-            sys.stdout.flush()
             return
 
         if args.session:
