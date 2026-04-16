@@ -20,6 +20,8 @@ MAX_TOOL_TURNS = 10
 
 
 class CapabilityBoundaryUnavailableError(RuntimeError):
+    pass
+
 
 class SessionManager:
     def __init__(
