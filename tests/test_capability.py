@@ -23,7 +23,15 @@ import pytest
 from src.capability.boundary import CapabilityBoundary
 from src.capability.models import CapabilityResult, GovernanceOutcome, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
-from src.capability.tools import ReadFileTool, Tool
+from src.capability.tools import (
+    ApplyExactHunkTool,
+    ReadFileTool,
+    ReplaceAllInFileTool,
+    ReplaceBlockInFileTool,
+    ReplaceInFileTool,
+    Tool,
+    WriteFileTool,
+)
 from src.knowledge.assembly import TranscriptContextAssembler
 from src.providers.base import ExecutionBackend
 from src.runtime.models import (
@@ -911,9 +919,15 @@ class TestCLICapabilityWiring:
     def test_build_capability_boundary(self, workspace: Path) -> None:
         from src.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
-        definitions = boundary.list_definitions()
-        assert len(definitions) == 1
-        assert definitions[0].name == "native__read_file"
+        names = {d.name for d in boundary.list_definitions()}
+        assert names == {
+            "native__read_file",
+            "native__write_file",
+            "native__replace_in_file",
+            "native__replace_all_in_file",
+            "native__replace_block_in_file",
+            "native__apply_exact_hunk",
+        }
 
     def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:
         from src.cli.harness import _build_capability_boundary
@@ -998,3 +1012,346 @@ class TestCodexInputIdField:
         fc_item = [i for i in items if i.get("type") == "function_call"][0]
         assert fc_item["id"] == "fc_abc"  # Uses provider_item_id (fc_ prefix)
         assert fc_item["call_id"] == "call_xyz"  # Uses tool_call_id (call_ prefix)
+
+
+# ---------------------------------------------------------------------------
+# Handoff 09: native filesystem tool family + module reorganization
+# ---------------------------------------------------------------------------
+
+
+class TestToolModuleLayout:
+    """Handoff 09 explicit requirement: Tool base class and ReadFileTool must
+    live in different files."""
+
+    def test_tool_base_in_base_module(self) -> None:
+        from src.capability.tools import base as base_module
+        assert base_module.Tool is Tool
+
+    def test_read_file_tool_not_in_base_module(self) -> None:
+        from src.capability.tools import base as base_module
+        assert not hasattr(base_module, "ReadFileTool")
+
+    def test_native_filesystem_tools_grouped(self) -> None:
+        from src.capability.tools import native_filesystem
+        for cls in (
+            ReadFileTool,
+            WriteFileTool,
+            ReplaceInFileTool,
+            ReplaceAllInFileTool,
+            ReplaceBlockInFileTool,
+            ApplyExactHunkTool,
+        ):
+            assert getattr(native_filesystem, cls.__name__) is cls
+
+    def test_package_reexports_remain_stable(self) -> None:
+        """Existing call sites import from src.capability.tools — must still work."""
+        from src.capability.tools import Tool as T, ReadFileTool as R
+        assert T is Tool
+        assert R is ReadFileTool
+
+
+class TestWriteFileTool:
+    def test_write_new_file(self, workspace: Path) -> None:
+        tool = WriteFileTool(workspace)
+        result = tool.execute(path="new.txt", content="brand new")
+        assert result.ok is True
+        assert (workspace / "new.txt").read_text() == "brand new"
+        assert result.data["mutation_kind"] == "write_file"
+
+    def test_write_creates_parent_dirs(self, workspace: Path) -> None:
+        tool = WriteFileTool(workspace)
+        result = tool.execute(path="deep/sub/file.txt", content="ok")
+        assert result.ok is True
+        assert (workspace / "deep" / "sub" / "file.txt").read_text() == "ok"
+
+    def test_write_overwrites_existing(self, workspace: Path) -> None:
+        tool = WriteFileTool(workspace)
+        result = tool.execute(path="hello.txt", content="replaced")
+        assert result.ok is True
+        assert (workspace / "hello.txt").read_text() == "replaced"
+
+    def test_write_path_escape_blocked(self, workspace: Path) -> None:
+        tool = WriteFileTool(workspace)
+        result = tool.execute(path="../outside.txt", content="nope")
+        assert result.ok is False
+        assert "path escapes workspace" in result.content
+
+    def test_governance_attributes(self, workspace: Path) -> None:
+        tool = WriteFileTool(workspace)
+        assert tool.side_effect_class == "write"
+        assert tool.requires_approval is True
+
+    def test_definition_schema(self, workspace: Path) -> None:
+        defn = WriteFileTool(workspace).definition
+        assert defn.name == "native__write_file"
+        assert set(defn.parameters["required"]) == {"path", "content"}
+
+
+class TestReplaceInFileTool:
+    def test_replaces_first_occurrence_only(self, workspace: Path) -> None:
+        (workspace / "target.txt").write_text("foo foo foo")
+        tool = ReplaceInFileTool(workspace)
+        result = tool.execute(path="target.txt", old_text="foo", new_text="bar")
+        assert result.ok is True
+        assert (workspace / "target.txt").read_text() == "bar foo foo"
+        assert result.data["replacement_count"] == 1
+
+    def test_missing_text_fails(self, workspace: Path) -> None:
+        tool = ReplaceInFileTool(workspace)
+        result = tool.execute(path="hello.txt", old_text="absent", new_text="x")
+        assert result.ok is False
+        assert "old_text not found" in result.content
+        assert (workspace / "hello.txt").read_text() == "hello world"
+
+    def test_missing_file_fails(self, workspace: Path) -> None:
+        tool = ReplaceInFileTool(workspace)
+        result = tool.execute(path="nope.txt", old_text="a", new_text="b")
+        assert result.ok is False
+        assert "file not found" in result.content
+
+
+class TestReplaceAllInFileTool:
+    def test_replaces_every_occurrence(self, workspace: Path) -> None:
+        (workspace / "target.txt").write_text("foo foo foo")
+        tool = ReplaceAllInFileTool(workspace)
+        result = tool.execute(path="target.txt", old_text="foo", new_text="bar")
+        assert result.ok is True
+        assert (workspace / "target.txt").read_text() == "bar bar bar"
+        assert result.data["replacement_count"] == 3
+
+    def test_no_matches_fails(self, workspace: Path) -> None:
+        tool = ReplaceAllInFileTool(workspace)
+        result = tool.execute(path="hello.txt", old_text="zzz", new_text="x")
+        assert result.ok is False
+        assert result.data["replacement_count"] == 0
+
+
+class TestReplaceBlockInFileTool:
+    def test_unique_block_replaced(self, workspace: Path) -> None:
+        (workspace / "code.py").write_text("def a():\n    return 1\n\ndef b():\n    return 2\n")
+        tool = ReplaceBlockInFileTool(workspace)
+        result = tool.execute(
+            path="code.py",
+            old_block="def a():\n    return 1",
+            new_block="def a():\n    return 42",
+        )
+        assert result.ok is True
+        assert "return 42" in (workspace / "code.py").read_text()
+
+    def test_ambiguous_block_refused(self, workspace: Path) -> None:
+        (workspace / "dup.txt").write_text("AAA\nAAA\n")
+        tool = ReplaceBlockInFileTool(workspace)
+        result = tool.execute(path="dup.txt", old_block="AAA", new_block="BBB")
+        assert result.ok is False
+        assert "multiple regions" in result.content
+        assert (workspace / "dup.txt").read_text() == "AAA\nAAA\n"
+        assert result.data["match_count"] == 2
+
+    def test_missing_block_refused(self, workspace: Path) -> None:
+        tool = ReplaceBlockInFileTool(workspace)
+        result = tool.execute(path="hello.txt", old_block="missing", new_block="x")
+        assert result.ok is False
+        assert "old_block not found" in result.content
+
+
+class TestApplyExactHunkTool:
+    def test_exact_hunk_applied(self, workspace: Path) -> None:
+        (workspace / "code.py").write_text("pre\nTARGET\npost\n")
+        tool = ApplyExactHunkTool(workspace)
+        result = tool.execute(
+            path="code.py",
+            before_context="pre\n",
+            old_block="TARGET",
+            after_context="\npost",
+            new_block="CHANGED",
+        )
+        assert result.ok is True
+        assert (workspace / "code.py").read_text() == "pre\nCHANGED\npost\n"
+        assert result.data["replacement_count"] == 1
+
+    def test_hunk_not_found(self, workspace: Path) -> None:
+        tool = ApplyExactHunkTool(workspace)
+        result = tool.execute(
+            path="hello.txt",
+            before_context="prefix",
+            old_block="x",
+            after_context="suffix",
+            new_block="y",
+        )
+        assert result.ok is False
+        assert "exact hunk not found" in result.content
+
+    def test_ambiguous_hunk_refused(self, workspace: Path) -> None:
+        (workspace / "dup.txt").write_text("AxA\nAxA\n")
+        tool = ApplyExactHunkTool(workspace)
+        result = tool.execute(
+            path="dup.txt",
+            before_context="A",
+            old_block="x",
+            after_context="A",
+            new_block="y",
+        )
+        assert result.ok is False
+        assert "multiple regions" in result.content
+        assert (workspace / "dup.txt").read_text() == "AxA\nAxA\n"
+
+
+class TestWriteToolsGovernance:
+    """Write-capable tools must remain inside the governed closure: workspace
+    escape and sensitive-path denial still apply when routed through the
+    CapabilityBoundary."""
+
+    def _boundary(self, workspace: Path) -> CapabilityBoundary:
+        registry = CapabilityRegistry()
+        registry.register(WriteFileTool(workspace))
+        registry.register(ReplaceInFileTool(workspace))
+        return CapabilityBoundary(registry, workspace)
+
+    def test_write_to_runtime_blocked_by_boundary(self, workspace: Path) -> None:
+        boundary = self._boundary(workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": ".runtime/evil.json", "content": "bad"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".runtime" / "evil.json").exists()
+
+    def test_write_to_env_blocked_by_boundary(self, workspace: Path) -> None:
+        boundary = self._boundary(workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": ".env", "content": "SECRET=leaked"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".env").exists()
+
+    def test_write_path_escape_blocked_by_boundary(self, workspace: Path) -> None:
+        boundary = self._boundary(workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": "../outside.txt", "content": "nope"},
+        ))
+        assert result.ok is False
+        assert "governance denied" in result.content
+
+    def test_replace_through_boundary_success(self, workspace: Path) -> None:
+        boundary = self._boundary(workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__replace_in_file",
+            arguments={"path": "hello.txt", "old_text": "world", "new_text": "orbit"},
+        ))
+        assert result.ok is True
+        assert (workspace / "hello.txt").read_text() == "hello orbit"
+        assert result.governance_outcome == "allowed"
+
+    def test_all_write_tools_declared_write_side_effect(self, workspace: Path) -> None:
+        for cls in (
+            WriteFileTool,
+            ReplaceInFileTool,
+            ReplaceAllInFileTool,
+            ReplaceBlockInFileTool,
+            ApplyExactHunkTool,
+        ):
+            tool = cls(workspace)
+            assert tool.side_effect_class == "write"
+            assert tool.requires_approval is True
+
+
+class TestProtectedPrefixHardening:
+    """Audit HIGH-2 / MED-1 / MED-3: protected prefix must cover .git (whole
+    tree) and .env variants, and must also deny under direct tool invocation
+    so writes can't bypass the boundary via a direct call path."""
+
+    def test_boundary_denies_git_hooks(self, workspace: Path) -> None:
+        (workspace / ".git").mkdir()
+        (workspace / ".git" / "hooks").mkdir()
+        registry = CapabilityRegistry()
+        registry.register(WriteFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\necho hi"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".git" / "hooks" / "pre-commit").exists()
+
+    def test_boundary_denies_env_local_variant(self, workspace: Path) -> None:
+        registry = CapabilityRegistry()
+        registry.register(WriteFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": ".env.production", "content": "SECRET=leaked"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".env.production").exists()
+
+    def test_boundary_denies_envrc(self, workspace: Path) -> None:
+        """direnv .envrc files commonly hold workspace-scoped credentials."""
+        registry = CapabilityRegistry()
+        registry.register(WriteFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__write_file",
+            arguments={"path": ".envrc", "content": "export TOKEN=abc"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".envrc").exists()
+
+    def test_direct_write_tool_denies_protected_prefix(self, workspace: Path) -> None:
+        """Defense-in-depth: even without the boundary, the tool refuses."""
+        tool = WriteFileTool(workspace)
+        result = tool.execute(path=".runtime/evil.json", content="bad")
+        assert result.ok is False
+        assert "protected location" in result.content
+        assert not (workspace / ".runtime").exists(), (
+            "WriteFileTool must not create protected parent directories even under "
+            "direct invocation"
+        )
+
+    def test_direct_read_tool_denies_protected_prefix(self, workspace: Path) -> None:
+        (workspace / ".git").mkdir()
+        (workspace / ".git" / "config").write_text("[core]\n")
+        tool = ReadFileTool(workspace)
+        result = tool.execute(path=".git/config")
+        assert result.ok is False
+        assert "protected location" in result.content
+
+
+class TestNativeToolRegistryAggregation:
+    def test_six_tools_register_and_list_stable(self, workspace: Path) -> None:
+        registry = CapabilityRegistry()
+        for tool in (
+            ReadFileTool(workspace),
+            WriteFileTool(workspace),
+            ReplaceInFileTool(workspace),
+            ReplaceAllInFileTool(workspace),
+            ReplaceBlockInFileTool(workspace),
+            ApplyExactHunkTool(workspace),
+        ):
+            registry.register(tool)
+        names = registry.list_names()
+        assert names == sorted([
+            "native__read_file",
+            "native__write_file",
+            "native__replace_in_file",
+            "native__replace_all_in_file",
+            "native__replace_block_in_file",
+            "native__apply_exact_hunk",
+        ])
+        boundary = CapabilityBoundary(registry, workspace)
+        # Tool definitions sent to provider remain coherent and unique
+        defs = boundary.list_definitions()
+        assert len({d.name for d in defs}) == len(defs) == 6

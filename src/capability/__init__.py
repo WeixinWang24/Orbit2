@@ -1,7 +1,15 @@
-from src.capability.models import ToolDefinition, ToolResult, GovernanceOutcome, CapabilityResult
-from src.capability.tools import Tool, ReadFileTool
-from src.capability.registry import CapabilityRegistry
 from src.capability.boundary import CapabilityBoundary
+from src.capability.models import CapabilityResult, GovernanceOutcome, ToolDefinition, ToolResult
+from src.capability.registry import CapabilityRegistry
+from src.capability.tools import (
+    ApplyExactHunkTool,
+    ReadFileTool,
+    ReplaceAllInFileTool,
+    ReplaceBlockInFileTool,
+    ReplaceInFileTool,
+    Tool,
+    WriteFileTool,
+)
 
 __all__ = [
     "ToolDefinition",
@@ -10,6 +18,11 @@ __all__ = [
     "CapabilityResult",
     "Tool",
     "ReadFileTool",
+    "WriteFileTool",
+    "ReplaceInFileTool",
+    "ReplaceAllInFileTool",
+    "ReplaceBlockInFileTool",
+    "ApplyExactHunkTool",
     "CapabilityRegistry",
     "CapabilityBoundary",
 ]

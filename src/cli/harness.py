@@ -6,7 +6,14 @@ from pathlib import Path
 
 from src.capability.boundary import CapabilityBoundary
 from src.capability.registry import CapabilityRegistry
-from src.capability.tools import ReadFileTool
+from src.capability.tools import (
+    ApplyExactHunkTool,
+    ReadFileTool,
+    ReplaceAllInFileTool,
+    ReplaceBlockInFileTool,
+    ReplaceInFileTool,
+    WriteFileTool,
+)
 from src.providers.base import ExecutionBackend
 from src.providers.codex import CodexBackend, CodexConfig
 from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
@@ -19,6 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     registry = CapabilityRegistry()
     registry.register(ReadFileTool(workspace_root))
+    registry.register(WriteFileTool(workspace_root))
+    registry.register(ReplaceInFileTool(workspace_root))
+    registry.register(ReplaceAllInFileTool(workspace_root))
+    registry.register(ReplaceBlockInFileTool(workspace_root))
+    registry.register(ApplyExactHunkTool(workspace_root))
     return CapabilityBoundary(registry, workspace_root)
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
