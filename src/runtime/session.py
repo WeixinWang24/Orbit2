@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Callable
 
-from src.knowledge.assembly import ContextAssembler, TranscriptContextAssembler
+from src.knowledge.assembly import ContextAssembler, StructuredContextAssembler
 from src.providers.base import ExecutionBackend
 from src.runtime.models import (
     ConversationMessage,
@@ -33,7 +33,7 @@ class SessionManager:
     ) -> None:
         self._backend = backend
         self._store = store
-        self._assembler = assembler or TranscriptContextAssembler()
+        self._assembler = assembler or StructuredContextAssembler()
         self._capability_boundary = capability_boundary
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:

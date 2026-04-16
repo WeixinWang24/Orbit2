@@ -1,18 +1,7 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-
+from src.knowledge.assembly.base import ContextAssembler
 from src.runtime.models import ConversationMessage, Message, MessageRole, TurnRequest
-
-
-class ContextAssembler(ABC):
-    @abstractmethod
-    def assemble(
-        self,
-        messages: list[ConversationMessage],
-        *,
-        system_prompt: str | None = None,
-    ) -> TurnRequest: ...
 
 
 class TranscriptContextAssembler(ContextAssembler):
