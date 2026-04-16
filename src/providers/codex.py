@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel
 
-from src.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan
+from src.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan, ToolRequest
 from src.providers.base import BackendConfig, ExecutionBackend
 from src.transports.codex_sse import CodexHttpError, CodexSSEEvent, stream_sse_events
 
@@ -144,22 +144,62 @@ class CodexBackend(ExecutionBackend):
         }
         if request.system:
             payload["instructions"] = request.system
+        if request.tool_definitions:
+            payload["tools"] = [
+                {"type": "function", **td}
+                for td in request.tool_definitions
+            ]
         return payload
 
     def _build_codex_input(self, request: TurnRequest) -> list[dict]:
         items: list[dict] = []
         for m in request.messages:
-            if m.role == "assistant":
+            if m.role == "assistant" and m.tool_calls:
+                # Assistant message that requested tool calls — emit function_call items
+                if m.content:
+                    items.append({
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": m.content}],
+                    })
+                for tc in m.tool_calls:
+                    item_id = tc.get("provider_item_id") or tc["tool_call_id"]
+                    items.append({
+                        "type": "function_call",
+                        "id": item_id,
+                        "call_id": tc["tool_call_id"],
+                        "name": tc["tool_name"],
+                        "arguments": json.dumps(tc["arguments"]) if isinstance(tc["arguments"], dict) else tc["arguments"],
+                    })
+            elif m.role == "tool":
+                # Tool result — emit function_call_output item
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": m.tool_call_id or "",
+                    "output": m.content or "",
+                })
+            elif m.role == "assistant":
                 items.append({
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": m.content}],
+                    "content": [{"type": "output_text", "text": m.content or ""}],
                 })
             else:
                 items.append({
                     "role": m.role,
-                    "content": [{"type": "input_text", "text": m.content}],
+                    "content": [{"type": "input_text", "text": m.content or ""}],
                 })
         return items
+
+    @staticmethod
+    def _parse_tool_arguments(arguments_str: str | None) -> dict:
+        if not arguments_str or not isinstance(arguments_str, str):
+            return {}
+        try:
+            args = json.loads(arguments_str)
+        except json.JSONDecodeError:
+            return {"_raw_arguments": arguments_str, "_parse_error": True}
+        if isinstance(args, dict):
+            return args
+        return {"_raw_arguments": arguments_str, "_parse_error": True}
 
     def _normalize_events(self, events: list[CodexSSEEvent]) -> ExecutionPlan:
         text_parts: list[str] = []
@@ -167,6 +207,11 @@ class CodexBackend(ExecutionBackend):
         status: str | None = None
         usage: dict | None = None
         model: str | None = None
+
+        # Function calls from response.output_item.done (authoritative per-item)
+        item_done_calls: list[ToolRequest] = []
+        # Function calls from response.completed output items (fallback)
+        response_output_calls: list[ToolRequest] = []
 
         for event in events:
             p = event.payload
@@ -186,11 +231,54 @@ class CodexBackend(ExecutionBackend):
                 if isinstance(delta, str):
                     text_parts.append(delta)
 
+            elif event_type == "response.output_item.done":
+                # Authoritative: complete item with all fields
+                item = p.get("item", {})
+                if item.get("type") == "function_call":
+                    call_id = item.get("call_id") or item.get("id") or ""
+                    item_id = item.get("id", "")
+                    name = item.get("name", "")
+                    arguments_str = item.get("arguments", "")
+                    args = self._parse_tool_arguments(arguments_str)
+                    item_done_calls.append(ToolRequest(
+                        tool_call_id=call_id,
+                        tool_name=name,
+                        arguments=args,
+                        provider_item_id=item_id if item_id else None,
+                    ))
+
             elif event_type in {
                 "response.completed",
                 "response.done",
-                "response.incomplete",
             }:
+                response = p.get("response")
+                if isinstance(response, dict):
+                    if isinstance(response.get("id"), str):
+                        response_id = response["id"]
+                    if isinstance(response.get("status"), str):
+                        status = response["status"]
+                    if isinstance(response.get("usage"), dict):
+                        usage = response["usage"]
+                    if isinstance(response.get("model"), str):
+                        model = response["model"]
+                    # Fallback: extract from response output items
+                    output_items = response.get("output", [])
+                    if isinstance(output_items, list):
+                        for item in output_items:
+                            if isinstance(item, dict) and item.get("type") == "function_call":
+                                call_id = item.get("call_id") or item.get("id") or ""
+                                item_id = item.get("id", "")
+                                name = item.get("name", "")
+                                arguments_str = item.get("arguments", "")
+                                args = self._parse_tool_arguments(arguments_str)
+                                response_output_calls.append(ToolRequest(
+                                    tool_call_id=call_id,
+                                    tool_name=name,
+                                    arguments=args,
+                                    provider_item_id=item_id if item_id else None,
+                                ))
+
+            elif event_type == "response.incomplete":
                 response = p.get("response")
                 if isinstance(response, dict):
                     if isinstance(response.get("id"), str):
@@ -216,6 +304,27 @@ class CodexBackend(ExecutionBackend):
                     metadata={"error": message, "event_count": len(events)},
                 )
                 return self._normalize_to_plan(normalized)
+
+        # Prefer response.output_item.done (has all fields).
+        # Fall back to response.completed output items.
+        completed_calls = item_done_calls or response_output_calls
+
+        # If we collected function calls, return them as tool requests
+        if completed_calls:
+            final_text = "".join(text_parts).strip() or None
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label=f"{self.backend_name}-tool-calls",
+                final_text=final_text,
+                model=model or self._config.model,
+                tool_requests=completed_calls,
+                metadata={
+                    "response_id": response_id,
+                    "status": status,
+                    "event_count": len(events),
+                    "usage": usage,
+                },
+            )
 
         final_text = "".join(text_parts).strip()
         if final_text:

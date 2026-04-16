@@ -31,6 +31,7 @@ class ToolRequest(BaseModel):
     tool_call_id: str
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    provider_item_id: Optional[str] = None
 
 
 class TurnRequest(BaseModel):

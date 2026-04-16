@@ -4,6 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from src.capability.boundary import CapabilityBoundary
+from src.capability.registry import CapabilityRegistry
+from src.capability.tools import ReadFileTool
 from src.providers.base import ExecutionBackend
 from src.providers.codex import CodexBackend, CodexConfig
 from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
@@ -11,6 +14,12 @@ from src.runtime.session import SessionManager
 from src.store.sqlite import SQLiteSessionStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
+    registry = CapabilityRegistry()
+    registry.register(ReadFileTool(workspace_root))
+    return CapabilityBoundary(registry, workspace_root)
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
@@ -114,7 +123,8 @@ def main() -> None:
     store = SQLiteSessionStore(db_path)
     try:
         backend = _build_backend(args.backend)
-        manager = SessionManager(backend=backend, store=store)
+        boundary = _build_capability_boundary(REPO_ROOT)
+        manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
 
         if args.list_sessions:
             sessions = manager.list_sessions()

@@ -67,6 +67,13 @@ class CapabilityBoundary:
             governance_outcome="allowed",
         )
 
+    # Paths that must not be accessible via capability tools even within workspace
+    _DENIED_PATH_PREFIXES = (
+        ".runtime",
+        ".env",
+        ".git/config",
+    )
+
     def _govern(self, tool: Tool, request: ToolRequest) -> GovernanceOutcome:
         path_arg = request.arguments.get("path")
         if path_arg is not None:
@@ -78,6 +85,14 @@ class CapabilityBoundary:
                     allowed=False,
                     reason="path escapes workspace boundary",
                 )
+            # Block access to sensitive paths within workspace
+            relative = str(target.relative_to(self._workspace_root))
+            for prefix in self._DENIED_PATH_PREFIXES:
+                if relative == prefix or relative.startswith(prefix + "/") or relative.startswith(prefix + "\\"):
+                    return GovernanceOutcome(
+                        allowed=False,
+                        reason=f"path targets protected location: {prefix}",
+                    )
         return GovernanceOutcome(allowed=True)
 
     @staticmethod

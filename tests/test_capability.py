@@ -642,3 +642,359 @@ class TestAuditFindings:
         plan = backend._normalize_response_to_plan(FakeResponse())
         assert len(plan.tool_requests) == 1
         assert plan.tool_requests[0].arguments.get("_parse_error") is True
+
+
+# ---------------------------------------------------------------------------
+# Handoff 08: Tool-call triggering and transcript persistence debug tests
+# ---------------------------------------------------------------------------
+
+
+class TestCodexToolSupport:
+    """Tests for Codex backend tool definition injection and function_call parsing."""
+
+    def _make_codex_backend(self, tmp_path: Path):
+        from src.providers.codex import CodexBackend, CodexConfig
+        credential_path = tmp_path / "cred.json"
+        credential_path.write_text(
+            '{"access_token":"tok","refresh_token":"ref",'
+            f'"expires_at_epoch_ms":{int(__import__("time").time() * 1000) + 60000}}}',
+            encoding="utf-8",
+        )
+        return CodexBackend(CodexConfig(credential_path=str(credential_path)), repo_root=tmp_path)
+
+    def test_codex_payload_includes_tool_definitions(self, tmp_path: Path) -> None:
+        backend = self._make_codex_backend(tmp_path)
+        request = TurnRequest(
+            messages=[Message(role="user", content="read file")],
+            tool_definitions=[
+                {"name": "native__read_file", "description": "Read a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+            ],
+        )
+        payload = backend._build_request_payload(request)
+        assert "tools" in payload
+        assert len(payload["tools"]) == 1
+        assert payload["tools"][0]["type"] == "function"
+        assert payload["tools"][0]["name"] == "native__read_file"
+
+    def test_codex_payload_no_tools_when_none(self, tmp_path: Path) -> None:
+        backend = self._make_codex_backend(tmp_path)
+        request = TurnRequest(messages=[Message(role="user", content="hello")])
+        payload = backend._build_request_payload(request)
+        assert "tools" not in payload
+
+    def test_codex_normalizes_via_output_item_done(self, tmp_path: Path) -> None:
+        """Primary path: response.output_item.done has all fields (real Codex API format)."""
+        from src.transports.codex_sse import CodexSSEEvent
+        backend = self._make_codex_backend(tmp_path)
+        # Real Codex API event sequence (from .runtime/last_events.json capture)
+        events = [
+            CodexSSEEvent(
+                payload={"type": "response.output_item.added", "output_index": 0,
+                         "item": {"id": "fc_123", "type": "function_call", "status": "in_progress",
+                                  "arguments": "", "call_id": "call_abc", "name": "native__read_file"}},
+                raw_line="data: ...",
+            ),
+            CodexSSEEvent(
+                payload={"type": "response.function_call_arguments.delta",
+                         "delta": '{"path":"hello.txt"}', "item_id": "fc_123", "output_index": 0},
+                raw_line="data: ...",
+            ),
+            CodexSSEEvent(
+                payload={"type": "response.function_call_arguments.done",
+                         "arguments": '{"path":"hello.txt"}', "item_id": "fc_123", "output_index": 0},
+                raw_line="data: ...",
+            ),
+            CodexSSEEvent(
+                payload={"type": "response.output_item.done", "output_index": 0,
+                         "item": {"id": "fc_123", "type": "function_call", "status": "completed",
+                                  "arguments": '{"path":"hello.txt"}', "call_id": "call_abc", "name": "native__read_file"}},
+                raw_line="data: ...",
+            ),
+            # response.completed with empty output (real Codex behavior)
+            CodexSSEEvent(
+                payload={"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "model": "gpt-5.4", "usage": {}, "output": []}},
+                raw_line="data: ...",
+            ),
+        ]
+        plan = backend._normalize_events(events)
+        assert plan.plan_label == "openai-codex-tool-calls"
+        assert len(plan.tool_requests) == 1
+        assert plan.tool_requests[0].tool_call_id == "call_abc"
+        assert plan.tool_requests[0].tool_name == "native__read_file"
+        assert plan.tool_requests[0].arguments == {"path": "hello.txt"}
+        assert plan.tool_requests[0].provider_item_id == "fc_123"
+
+    def test_codex_input_includes_tool_results(self, tmp_path: Path) -> None:
+        backend = self._make_codex_backend(tmp_path)
+        request = TurnRequest(
+            messages=[
+                Message(role="user", content="read it"),
+                Message(role="assistant", content=None,
+                        tool_calls=[{"tool_call_id": "call_abc", "tool_name": "native__read_file",
+                                     "arguments": {"path": "f.txt"}, "provider_item_id": "fc_123"}]),
+                Message(role="tool", content="file data", tool_call_id="call_abc"),
+            ],
+        )
+        items = backend._build_codex_input(request)
+        # user, function_call, function_call_output
+        assert len(items) == 3
+        assert items[0]["role"] == "user"
+        assert items[1]["type"] == "function_call"
+        assert items[1]["id"] == "fc_123"  # fc_ prefix for Codex API
+        assert items[1]["call_id"] == "call_abc"  # call_ prefix
+        assert items[1]["name"] == "native__read_file"
+        assert items[2]["type"] == "function_call_output"
+        assert items[2]["call_id"] == "call_abc"
+        assert items[2]["output"] == "file data"
+
+    def test_codex_input_falls_back_to_call_id_when_no_item_id(self, tmp_path: Path) -> None:
+        """When provider_item_id is absent, use tool_call_id as id fallback."""
+        backend = self._make_codex_backend(tmp_path)
+        request = TurnRequest(
+            messages=[
+                Message(role="user", content="hi"),
+                Message(role="assistant", content=None,
+                        tool_calls=[{"tool_call_id": "call_xyz", "tool_name": "read_file",
+                                     "arguments": {"path": "a.txt"}}]),
+                Message(role="tool", content="data", tool_call_id="call_xyz"),
+            ],
+        )
+        items = backend._build_codex_input(request)
+        fc_item = [i for i in items if i.get("type") == "function_call"][0]
+        assert fc_item["id"] == "call_xyz"  # falls back to tool_call_id
+        assert fc_item["call_id"] == "call_xyz"
+
+    def test_codex_malformed_function_call_args(self, tmp_path: Path) -> None:
+        from src.transports.codex_sse import CodexSSEEvent
+        backend = self._make_codex_backend(tmp_path)
+        events = [
+            CodexSSEEvent(
+                payload={"type": "response.output_item.done", "output_index": 0,
+                         "item": {"id": "fc_bad", "type": "function_call", "status": "completed",
+                                  "call_id": "call_bad", "name": "read_file",
+                                  "arguments": '{"path": "trunc'}},
+                raw_line="data: ...",
+            ),
+            CodexSSEEvent(
+                payload={"type": "response.completed", "response": {"id": "r1", "status": "completed", "model": "m", "usage": {}}},
+                raw_line="data: ...",
+            ),
+        ]
+        plan = backend._normalize_events(events)
+        assert len(plan.tool_requests) == 1
+        assert plan.tool_requests[0].arguments.get("_parse_error") is True
+
+    def test_codex_fallback_to_response_completed_output(self, tmp_path: Path) -> None:
+        """Fallback: when no output_item.done fires, use response.completed output items."""
+        from src.transports.codex_sse import CodexSSEEvent
+        backend = self._make_codex_backend(tmp_path)
+        events = [
+            CodexSSEEvent(
+                payload={
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_1",
+                        "status": "completed",
+                        "model": "gpt-5.4",
+                        "usage": {},
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "id": "fc_123",
+                                "call_id": "call_abc",
+                                "name": "native__read_file",
+                                "arguments": '{"path": "hello.txt"}',
+                                "status": "completed",
+                            }
+                        ],
+                    },
+                },
+                raw_line="data: ...",
+            ),
+        ]
+        plan = backend._normalize_events(events)
+        assert plan.plan_label == "openai-codex-tool-calls"
+        assert len(plan.tool_requests) == 1
+        assert plan.tool_requests[0].tool_call_id == "call_abc"
+        assert plan.tool_requests[0].tool_name == "native__read_file"
+        assert plan.tool_requests[0].arguments == {"path": "hello.txt"}
+
+
+class TestRealisticFileReadPath:
+    """Handoff 08 requirement: simulate a realistic file-read prompt and verify
+    the full closure path and transcript persistence."""
+
+    def test_file_read_end_to_end_transcript(self, workspace: Path) -> None:
+        """Simulate a file-read request through the full stack:
+        backend -> SessionManager -> CapabilityBoundary -> transcript persistence."""
+        tool_requests = [
+            [ToolRequest(
+                tool_call_id="call_read_1",
+                tool_name="native__read_file",
+                arguments={"path": "hello.txt"},
+            )]
+        ]
+        store = SQLiteSessionStore(db_path=":memory:")
+        backend = ToolCallBackend(tool_requests)
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+        manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
+        session = manager.create_session(system_prompt="You can read files.")
+
+        plan = manager.run_turn(session.session_id, "Please read hello.txt for me.")
+        assert plan.final_text == "I read the file for you."
+
+        # Full transcript verification
+        messages = store.list_messages(session.session_id)
+        assert len(messages) == 4
+
+        # 1. User message
+        assert messages[0].role == MessageRole.USER
+        assert messages[0].content == "Please read hello.txt for me."
+
+        # 2. Assistant with tool_calls metadata
+        assert messages[1].role == MessageRole.ASSISTANT
+        assert "tool_calls" in messages[1].metadata
+        tc = messages[1].metadata["tool_calls"][0]
+        assert tc["tool_call_id"] == "call_read_1"
+        assert tc["tool_name"] == "native__read_file"
+        assert tc["arguments"] == {"path": "hello.txt"}
+
+        # 3. Tool result with full metadata
+        assert messages[2].role == MessageRole.TOOL
+        assert messages[2].content == "hello world"
+        assert messages[2].metadata["tool_call_id"] == "call_read_1"
+        assert messages[2].metadata["tool_name"] == "native__read_file"
+        assert messages[2].metadata["ok"] is True
+        assert messages[2].metadata["governance_outcome"] == "allowed"
+
+        # 4. Final assistant text
+        assert messages[3].role == MessageRole.ASSISTANT
+        assert messages[3].content == "I read the file for you."
+
+    def test_file_read_persists_across_sessions(self, workspace: Path, tmp_path: Path) -> None:
+        """Verify tool-call transcript survives store reload (SQLite persistence)."""
+        db_file = tmp_path / "persist_test.db"
+        try:
+            # Write session with tool call
+            store1 = SQLiteSessionStore(db_path=db_file)
+            tool_requests = [
+                [ToolRequest(tool_call_id="c1", tool_name="native__read_file", arguments={"path": "hello.txt"})]
+            ]
+            backend = ToolCallBackend(tool_requests)
+            registry = CapabilityRegistry()
+            registry.register(ReadFileTool(workspace))
+            boundary = CapabilityBoundary(registry, workspace)
+            manager1 = SessionManager(backend=backend, store=store1, capability_boundary=boundary)
+            session = manager1.create_session()
+            manager1.run_turn(session.session_id, "read hello.txt")
+            store1.close()
+
+            # Read back from new store instance
+            store2 = SQLiteSessionStore(db_path=db_file)
+            messages = store2.list_messages(session.session_id)
+            store2.close()
+
+            roles = [m.role for m in messages]
+            assert MessageRole.TOOL in roles
+            tool_msg = [m for m in messages if m.role == MessageRole.TOOL][0]
+            assert tool_msg.content == "hello world"
+            assert tool_msg.metadata["tool_call_id"] == "c1"
+        finally:
+            db_file.unlink(missing_ok=True)
+
+
+class TestCLICapabilityWiring:
+    """Verify the CLI harness wires the capability boundary."""
+
+    def test_build_capability_boundary(self, workspace: Path) -> None:
+        from src.cli.harness import _build_capability_boundary
+        boundary = _build_capability_boundary(workspace)
+        definitions = boundary.list_definitions()
+        assert len(definitions) == 1
+        assert definitions[0].name == "native__read_file"
+
+    def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:
+        from src.cli.harness import _build_capability_boundary
+        store = SQLiteSessionStore(db_path=":memory:")
+        backend = ToolCallBackend([])
+        boundary = _build_capability_boundary(workspace)
+        manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
+        assert manager._capability_boundary is not None
+
+
+class TestGovernanceSensitivePaths:
+    """CRIT-01: Credential and sensitive path access must be denied."""
+
+    def test_runtime_credentials_blocked(self, workspace: Path) -> None:
+        (workspace / ".runtime").mkdir()
+        (workspace / ".runtime" / "creds.json").write_text('{"secret": true}')
+
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__read_file",
+            arguments={"path": ".runtime/creds.json"},
+        ))
+        assert result.ok is False
+        assert "governance denied" in result.content
+        assert "protected location" in result.content
+
+    def test_env_file_blocked(self, workspace: Path) -> None:
+        (workspace / ".env").write_text("SECRET=bad")
+
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__read_file",
+            arguments={"path": ".env"},
+        ))
+        assert result.ok is False
+        assert "protected location" in result.content
+
+    def test_normal_files_still_allowed(self, workspace: Path) -> None:
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+
+        result = boundary.execute(ToolRequest(
+            tool_call_id="c1",
+            tool_name="native__read_file",
+            arguments={"path": "hello.txt"},
+        ))
+        assert result.ok is True
+
+
+class TestCodexInputIdField:
+    """function_call items must include correct 'id' (fc_ prefix) for Responses API."""
+
+    def test_function_call_item_uses_provider_item_id(self, tmp_path: Path) -> None:
+        from src.providers.codex import CodexBackend, CodexConfig
+        import time
+        credential_path = tmp_path / "cred.json"
+        credential_path.write_text(
+            '{"access_token":"tok","refresh_token":"ref",'
+            f'"expires_at_epoch_ms":{int(time.time() * 1000) + 60000}}}',
+            encoding="utf-8",
+        )
+        backend = CodexBackend(CodexConfig(credential_path=str(credential_path)), repo_root=tmp_path)
+        request = TurnRequest(
+            messages=[
+                Message(role="user", content="read it"),
+                Message(role="assistant", content=None,
+                        tool_calls=[{"tool_call_id": "call_xyz", "tool_name": "read_file",
+                                     "arguments": {"path": "a.txt"}, "provider_item_id": "fc_abc"}]),
+                Message(role="tool", content="data", tool_call_id="call_xyz"),
+            ],
+        )
+        items = backend._build_codex_input(request)
+        fc_item = [i for i in items if i.get("type") == "function_call"][0]
+        assert fc_item["id"] == "fc_abc"  # Uses provider_item_id (fc_ prefix)
+        assert fc_item["call_id"] == "call_xyz"  # Uses tool_call_id (call_ prefix)
