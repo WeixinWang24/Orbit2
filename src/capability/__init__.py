@@ -1,4 +1,11 @@
 from src.capability.boundary import CapabilityBoundary
+from src.capability.mcp import (
+    McpClientBootstrap,
+    McpToolDescriptor,
+    McpToolWrapper,
+    StdioMcpClient,
+    attach_mcp_server,
+)
 from src.capability.models import CapabilityResult, GovernanceOutcome, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
@@ -25,4 +32,9 @@ __all__ = [
     "ApplyExactHunkTool",
     "CapabilityRegistry",
     "CapabilityBoundary",
+    "McpClientBootstrap",
+    "McpToolDescriptor",
+    "McpToolWrapper",
+    "StdioMcpClient",
+    "attach_mcp_server",
 ]

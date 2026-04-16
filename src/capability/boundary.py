@@ -72,18 +72,38 @@ class CapabilityBoundary:
             governance_outcome="allowed",
         )
 
+    # Argument names that governance treats as filesystem-path-bearing. Only
+    # names whose label unambiguously means "a path" are listed; ambiguous
+    # labels like "target" or "location" are left out to avoid false
+    # positives on unrelated tool arguments. This is still a literal-name
+    # check, not a semantic one — see Handoff 13 audit follow-ups for the
+    # remaining gap (MCP tools that carry paths under arbitrary argument
+    # names require Governance-Surface expansion to fully close).
+    _PATH_ARG_KEYS: tuple[str, ...] = (
+        "path",
+        "file",
+        "file_path",
+        "filepath",
+        "filename",
+        "source_path",
+        "target_path",
+        "src_path",
+        "dst_path",
+    )
+
     def _govern(self, tool: Tool, request: ToolRequest) -> GovernanceOutcome:
-        path_arg = request.arguments.get("path")
-        if path_arg is not None:
+        for key in self._PATH_ARG_KEYS:
+            path_arg = request.arguments.get(key)
+            if not isinstance(path_arg, str) or not path_arg:
+                continue
             target = (self._workspace_root / path_arg).resolve()
             try:
-                target.relative_to(self._workspace_root)
+                relative = target.relative_to(self._workspace_root).as_posix()
             except ValueError:
                 return GovernanceOutcome(
                     allowed=False,
                     reason="path escapes workspace boundary",
                 )
-            relative = target.relative_to(self._workspace_root).as_posix()
             matched = is_protected_relative_path(relative)
             if matched is not None:
                 return GovernanceOutcome(
@@ -98,6 +118,7 @@ class CapabilityBoundary:
         if not schema:
             return None
 
+        has_properties_decl = "properties" in schema
         declared_props = set(schema.get("properties", {}).keys())
         required = set(schema.get("required", []))
         provided = set(request.arguments.keys())
@@ -106,8 +127,13 @@ class CapabilityBoundary:
         if missing:
             return f"missing required arguments: {', '.join(sorted(missing))}"
 
-        unexpected = provided - declared_props
-        if unexpected:
-            return f"unexpected arguments: {', '.join(sorted(unexpected))}"
+        # When `properties` is absent, the schema is under-specified (e.g. an
+        # MCP server that emits `{"type":"object","additionalProperties":true}`
+        # without enumerating fields). Only enforce `required` in that case;
+        # do not reject legitimate arguments as "unexpected".
+        if has_properties_decl:
+            unexpected = provided - declared_props
+            if unexpected:
+                return f"unexpected arguments: {', '.join(sorted(unexpected))}"
 
         return None
