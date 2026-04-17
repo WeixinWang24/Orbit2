@@ -259,32 +259,53 @@ def _run_interactive(
             _handle_reset_permission(boundary, active_session_id)
             continue
 
-        # Regular user input — send to model
-        _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET} ")
+        # Regular user input — send to model. Assistant prefix lives on its
+        # own line so the rendered body below lands cleanly, and a single-
+        # line progress indicator can be wiped with `\r\x1b[K` without
+        # touching the prefix.
+        _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET}\n")
 
+        is_tty = sys.stdout.isatty()
         last_len = 0
-        stream_anchor_saved = False
-        if sys.stdout.isatty():
-            # DEC save-cursor. Streaming deltas print raw for liveness; after
-            # the turn closes we jump back and rewrite with markdown applied.
-            _write("\x1b7")
-            stream_anchor_saved = True
+        indicator_shown = False
 
         def on_partial(accumulated: str) -> None:
-            nonlocal last_len
-            delta = accumulated[last_len:]
-            last_len = len(accumulated)
-            _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
+            nonlocal last_len, indicator_shown
+            if is_tty:
+                # Suppress live raw deltas on a TTY. A prior revision
+                # streamed raw then used DEC save/restore + `\x1b[J` to
+                # overwrite with the rendered form, but terminal
+                # scrollback retained the raw stream whenever output
+                # scrolled past the saved anchor, producing a visible
+                # dual display (raw first, rendered below). Stay silent
+                # during generation and emit the rendered form exactly
+                # once when the turn closes; a single static ellipsis
+                # marks that work is in progress.
+                if not indicator_shown:
+                    _write(f"{DIM}\u2026{RESET}")
+                    indicator_shown = True
+                last_len = len(accumulated)
+            else:
+                # Non-TTY sinks (tests, pipes) still receive incremental
+                # raw deltas so downstream consumers retain a progress
+                # stream.
+                delta = accumulated[last_len:]
+                last_len = len(accumulated)
+                _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
 
         plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
         if plan.final_text:
             rendered = render_markdown_for_terminal(plan.final_text)
-            if last_len > 0 and stream_anchor_saved:
-                _write(f"\x1b8\x1b[J{CONTENT_ASSISTANT}{rendered}{RESET}")
+            if is_tty:
+                if indicator_shown:
+                    # Wipe the indicator line (cursor sits on it) so the
+                    # rendered body lands on a clean line.
+                    _write("\r\x1b[K")
+                _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
             elif last_len == 0:
                 _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
-            # else: streamed raw on a non-TTY sink — leave as-is.
+            # Non-TTY with streaming: already emitted raw deltas above.
         elif last_len == 0:
             _write(f"{ACCENT_ERROR}[no response]{RESET}")
 

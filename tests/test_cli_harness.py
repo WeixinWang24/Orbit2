@@ -255,39 +255,46 @@ def test_nonstreaming_fallback_applies_markdown_render(tmp_path: Path, capsys) -
     assert "\u2022 bold body" in plain
 
 
-def test_tty_streaming_path_rewrites_with_markdown(tmp_path: Path, capsys) -> None:
-    """When stdout is a TTY, the streaming path restores the saved cursor
-    and re-emits the final text through the markdown renderer.
+class _MarkdownStreamingBackend(ExecutionBackend):
+    """Backend that streams a markdown-rich response character by character."""
 
-    The raw-markdown bytes still appear in captured stdout (they were
-    streamed), but after the `\\x1b8\\x1b[J` restore+clear sequence the
-    rendered form must be what a terminal would actually display.
+    @property
+    def backend_name(self) -> str:
+        return "md-stream-dummy"
+
+    def plan_from_messages(
+        self,
+        request: TurnRequest,
+        *,
+        on_partial_text: Callable[[str], None] | None = None,
+    ) -> ExecutionPlan:
+        text = "### heading\n- **bold** body"
+        if on_partial_text:
+            for i in range(1, len(text) + 1):
+                on_partial_text(text[:i])
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="md-stream-dummy-final",
+            final_text=text,
+            model="dummy-model",
+        )
+
+
+def test_tty_streaming_path_emits_rendered_once_no_dual_display(
+    tmp_path: Path, capsys,
+) -> None:
+    """Regression: Handoff 25 Vio revise instruct.
+
+    On a TTY the operator must see the rendered form exactly **once**. The
+    earlier DEC save/restore approach streamed raw markdown then tried to
+    overwrite it, but terminal scrollback retained the raw stream whenever
+    output scrolled past the anchor, producing a visible raw+rendered dual
+    display. The corrected lifecycle: suppress raw deltas on a TTY, show a
+    single static `…` indicator while generating, clear the indicator line
+    with `\\r\\x1b[K` on completion, emit the rendered form once.
     """
-
-    class MarkdownStreamingBackend(ExecutionBackend):
-        @property
-        def backend_name(self) -> str:
-            return "md-stream-dummy"
-
-        def plan_from_messages(
-            self,
-            request: TurnRequest,
-            *,
-            on_partial_text: Callable[[str], None] | None = None,
-        ) -> ExecutionPlan:
-            text = "### heading\n- **bold** body"
-            if on_partial_text:
-                for i in range(1, len(text) + 1):
-                    on_partial_text(text[:i])
-            return ExecutionPlan(
-                source_backend=self.backend_name,
-                plan_label="md-stream-dummy-final",
-                final_text=text,
-                model="dummy-model",
-            )
-
     store = SQLiteSessionStore(tmp_path / "test.db")
-    mgr = SessionManager(backend=MarkdownStreamingBackend(), store=store)
+    mgr = SessionManager(backend=_MarkdownStreamingBackend(), store=store)
     session = mgr.create_session()
 
     import sys as _sys
@@ -299,15 +306,27 @@ def test_tty_streaming_path_rewrites_with_markdown(tmp_path: Path, capsys) -> No
         _run_interactive(mgr, session.session_id)
 
     out = capsys.readouterr().out
-    assert "\x1b7" in out  # DEC save cursor before streaming
-    assert "\x1b8\x1b[J" in out  # restore + clear after streaming
-    # After the restore sequence the renderer output must land.
-    after_restore = out.split("\x1b8\x1b[J", 1)[1]
-    plain_after = _strip_ansi(after_restore)
-    assert "### heading" not in plain_after
-    assert "- **bold** body" not in plain_after
-    assert "heading" in plain_after
-    assert "\u2022 bold body" in plain_after
+    plain = _strip_ansi(out)
+
+    # Progress indicator was shown then cleared; the legacy DEC save
+    # sequence must no longer appear anywhere.
+    assert "\u2026" in plain  # ellipsis indicator was rendered
+    assert "\r\x1b[K" in out  # indicator line was cleared
+    assert "\x1b7" not in out  # no DEC save cursor
+    assert "\x1b8" not in out  # no DEC restore cursor
+
+    # Raw markdown must never be visible at all: not streamed during
+    # generation and not left behind alongside the rendered form.
+    assert "### heading" not in plain
+    assert "**bold**" not in plain
+    assert "- **bold** body" not in plain
+
+    # Rendered form appears, and the body text appears exactly once (no
+    # duplicated raw + rendered copies).
+    assert "heading" in plain
+    assert "\u2022 bold body" in plain
+    assert plain.count("bold body") == 1
+    assert plain.count("heading") == 1
 
 
 # ---------------------------------------------------------------------------
