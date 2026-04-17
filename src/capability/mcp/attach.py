@@ -4,8 +4,9 @@ from typing import Callable
 
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp.client import McpClient, StdioMcpClient
+from src.capability.mcp.governance import resolve_mcp_tool_governance
 from src.capability.mcp.models import McpClientBootstrap
-from src.capability.mcp.wrapper import McpToolWrapper
+from src.capability.mcp.wrapper import FilesystemMcpToolWrapper, McpToolWrapper
 
 
 ClientFactory = Callable[[McpClientBootstrap], McpClient]
@@ -25,24 +26,18 @@ def attach_mcp_server(
 ) -> tuple[McpClient, list[str]]:
     """Attach an MCP server's tools to an Orbit2 `CapabilityRegistry`.
 
-    Lists tools from the server, wraps each as an `McpToolWrapper`, and
-    registers it under the namespaced `mcp__<server>__<tool>` name. Returns
-    the live client (so callers may close it) and the list of registered
-    tool names.
+    Lists tools from the server, resolves family-aware governance metadata
+    for each (see `src/capability/mcp/governance.py`), wraps each descriptor
+    as an `McpToolWrapper` (or a family-specific subclass), and registers
+    it under the namespaced `mcp__<server>__<tool>` name. Returns the live
+    client plus the list of registered tool names.
 
     `client_factory` lets tests inject a mock client without spawning a real
     subprocess; production callers pass `None` to get a `StdioMcpClient`.
 
-    This is the Orbit2-side capability-closure attachment seam for MCP:
-    every attached tool flows through the same `CapabilityRegistry` and
-    `CapabilityBoundary` that governs native tools.
-
-    Collision safety: if the constructed `mcp__<server>__<tool>` name is
+    Collision safety: if any constructed `mcp__<server>__<tool>` name is
     already present in the registry, attachment is aborted BEFORE any
-    registration mutates the registry. This prevents a malicious or
-    misconfigured second server from shadowing an existing native tool or a
-    previously-attached MCP server's tool. Raises
-    `McpAttachmentCollisionError` with the colliding name(s).
+    registration mutates the registry (all-or-nothing).
     """
     factory: ClientFactory = client_factory or (lambda b: StdioMcpClient(b))
     client = factory(bootstrap)
@@ -57,7 +52,27 @@ def attach_mcp_server(
 
     registered: list[str] = []
     for descriptor in descriptors:
-        wrapper = McpToolWrapper(descriptor=descriptor, client=client)
+        governance = resolve_mcp_tool_governance(
+            server_name=descriptor.server_name,
+            original_tool_name=descriptor.original_name,
+        )
+        wrapper = _make_wrapper(descriptor, client, governance, bootstrap)
         registry.register(wrapper)
         registered.append(descriptor.orbit_tool_name)
     return client, registered
+
+
+def _make_wrapper(
+    descriptor,
+    client: McpClient,
+    governance,
+    bootstrap: McpClientBootstrap,
+) -> McpToolWrapper:
+    if descriptor.server_name.strip().lower() == "filesystem":
+        return FilesystemMcpToolWrapper(
+            descriptor=descriptor,
+            client=client,
+            governance=governance,
+            bootstrap=bootstrap,
+        )
+    return McpToolWrapper(descriptor=descriptor, client=client, governance=governance)

@@ -927,6 +927,16 @@ class TestCLICapabilityWiring:
             "native__replace_all_in_file",
             "native__replace_block_in_file",
             "native__apply_exact_hunk",
+            "mcp__filesystem__read_file",
+            "mcp__filesystem__list_directory",
+            "mcp__filesystem__get_file_info",
+            "mcp__filesystem__write_file",
+            "mcp__filesystem__replace_in_file",
+            "mcp__git__git_status",
+            "mcp__git__git_diff",
+            "mcp__git__git_log",
+            "mcp__git__git_add",
+            "mcp__git__git_commit",
         }
 
     def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:

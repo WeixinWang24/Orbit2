@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 from src.capability.boundary import CapabilityBoundary
+from src.capability.mcp.attach import attach_mcp_server
+from src.capability.mcp.models import McpClientBootstrap
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
     ApplyExactHunkTool,
@@ -47,6 +49,26 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     registry.register(ReplaceAllInFileTool(workspace_root))
     registry.register(ReplaceBlockInFileTool(workspace_root))
     registry.register(ApplyExactHunkTool(workspace_root))
+
+    shared_env = {"ORBIT_WORKSPACE_ROOT": str(workspace_root)}
+    attach_mcp_server(
+        McpClientBootstrap(
+            server_name="filesystem",
+            command=sys.executable,
+            args=("-m", "src.mcp_servers.filesystem.stdio_server", str(workspace_root)),
+            env=shared_env,
+        ),
+        registry,
+    )
+    attach_mcp_server(
+        McpClientBootstrap(
+            server_name="git",
+            command=sys.executable,
+            args=("-m", "src.mcp_servers.git.stdio_server", str(workspace_root)),
+            env=shared_env,
+        ),
+        registry,
+    )
     return CapabilityBoundary(registry, workspace_root)
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 

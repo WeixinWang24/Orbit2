@@ -8,6 +8,7 @@ from src.capability.models import (
     ToolDefinition,
     is_protected_relative_path,
 )
+from src.capability.mcp.wrapper import GOVERNANCE_DENIED_MARKER
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import Tool
 from src.runtime.models import ToolRequest
@@ -63,13 +64,21 @@ class CapabilityBoundary:
             )
 
         result = tool.execute(**request.arguments)
+        governance_outcome = "allowed"
+        if result.data is not None:
+            # Tool-layer governance denials (e.g. family-aware MCP wrappers)
+            # surface through a data marker so the boundary reports them as a
+            # denial rather than a plain tool failure.
+            denied_reason = result.data.get(GOVERNANCE_DENIED_MARKER)
+            if isinstance(denied_reason, str) and denied_reason:
+                governance_outcome = f"denied: {denied_reason}"
         return CapabilityResult(
             tool_call_id=request.tool_call_id,
             tool_name=request.tool_name,
             ok=result.ok,
             content=result.content,
             data=result.data,
-            governance_outcome="allowed",
+            governance_outcome=governance_outcome,
         )
 
     # Argument names that governance treats as filesystem-path-bearing. Only
@@ -92,7 +101,10 @@ class CapabilityBoundary:
     )
 
     def _govern(self, tool: Tool, request: ToolRequest) -> GovernanceOutcome:
-        for key in self._PATH_ARG_KEYS:
+        path_arg_keys = tool.governance_path_arg_keys
+        if path_arg_keys is None:
+            path_arg_keys = self._PATH_ARG_KEYS
+        for key in path_arg_keys:
             path_arg = request.arguments.get(key)
             if not isinstance(path_arg, str) or not path_arg:
                 continue
