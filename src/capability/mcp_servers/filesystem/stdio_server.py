@@ -168,6 +168,62 @@ def _replace_in_file_result(path: str, old_text: str, new_text: str) -> dict[str
 
 
 # ---------------------------------------------------------------------------
+# Handoff 24: filesystem mutation widening helpers
+# ---------------------------------------------------------------------------
+
+
+def _replace_all_in_file_result(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+    target = _resolve_safe_existing_file(path)
+    current = target.read_text(encoding="utf-8")
+    count = current.count(old_text)
+    if count == 0:
+        return {
+            "ok": False,
+            "path": target.as_posix(),
+            "mutation_kind": "replace_all_in_file",
+            "failure_kind": "old_text_not_found",
+            "replacement_count": 0,
+        }
+    updated = current.replace(old_text, new_text)
+    target.write_text(updated, encoding="utf-8")
+    return {
+        "ok": True,
+        "path": target.as_posix(),
+        "mutation_kind": "replace_all_in_file",
+        "replacement_count": count,
+    }
+
+
+def _create_directory_result(path: str) -> dict[str, Any]:
+    target = _resolve_safe_path(path)
+    already_existed = target.exists() and target.is_dir()
+    target.mkdir(parents=True, exist_ok=True)
+    return {
+        "ok": True,
+        "path": target.as_posix(),
+        "mutation_kind": "create_directory",
+        "already_existed": already_existed,
+    }
+
+
+def _move_file_result(source: str, destination: str) -> dict[str, Any]:
+    src = _resolve_safe_path(source)
+    dst = _resolve_safe_path(destination)
+    if not src.exists():
+        raise ValueError("source path not found")
+    if not src.is_file():
+        raise ValueError("source path is not a file")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    return {
+        "ok": True,
+        "source": src.as_posix(),
+        "destination": dst.as_posix(),
+        "mutation_kind": "move_file",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Handoff 23: mcp_fs_read widening helpers
 # ---------------------------------------------------------------------------
 
@@ -521,6 +577,24 @@ def write_file(path: str, content: str) -> dict[str, Any]:
 def replace_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
     """Replace the first occurrence of `old_text` with `new_text`."""
     return _replace_in_file_result(path, old_text, new_text)
+
+
+@mcp.tool()
+def replace_all_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
+    """Replace ALL occurrences of `old_text` with `new_text`. Returns count."""
+    return _replace_all_in_file_result(path, old_text, new_text)
+
+
+@mcp.tool()
+def create_directory(path: str) -> dict[str, Any]:
+    """Create a workspace-relative directory (with parents). Idempotent."""
+    return _create_directory_result(path)
+
+
+@mcp.tool()
+def move_file(source: str, destination: str) -> dict[str, Any]:
+    """Move/rename a file inside the workspace. Creates destination parent dirs."""
+    return _move_file_result(source, destination)
 
 
 @mcp.tool()

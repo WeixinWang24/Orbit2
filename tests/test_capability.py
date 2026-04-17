@@ -917,11 +917,10 @@ class TestCLICapabilityWiring:
     """Verify the CLI harness wires the capability boundary."""
 
     def test_build_capability_boundary(self, workspace: Path) -> None:
-        """Regression guard (Handoff 17 Vio acceptance revise): every MCP family
-        that ships with a server implementation must be attached by default so
-        operators reach it through Orbit2 capability closure without per-session
-        configuration. Families whose servers are NOT shipped by Orbit2
-        (process / browser / obsidian) are deliberately absent."""
+        """Regression guard: every MCP family that ships with a server
+        implementation must be attached by default. Families whose servers are
+        NOT shipped by Orbit2 (browser / obsidian) are deliberately absent.
+        Process ships a server as of Handoff 24 and IS included."""
         from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
@@ -937,6 +936,9 @@ class TestCLICapabilityWiring:
             "mcp__filesystem__get_file_info",
             "mcp__filesystem__write_file",
             "mcp__filesystem__replace_in_file",
+            "mcp__filesystem__replace_all_in_file",
+            "mcp__filesystem__create_directory",
+            "mcp__filesystem__move_file",
             "mcp__filesystem__glob",
             "mcp__filesystem__search_files",
             "mcp__filesystem__grep",
@@ -946,11 +948,17 @@ class TestCLICapabilityWiring:
             "mcp__git__git_status",
             "mcp__git__git_diff",
             "mcp__git__git_log",
+            "mcp__git__git_show",
+            "mcp__git__git_changed_files",
             "mcp__git__git_add",
             "mcp__git__git_commit",
+            "mcp__git__git_restore",
+            "mcp__git__git_unstage",
+            "mcp__git__git_checkout_branch",
             "mcp__pytest__run_pytest_structured",
             "mcp__ruff__run_ruff_structured",
             "mcp__mypy__run_mypy_structured",
+            "mcp__process__run_process",
             "list_available_tools",
         }
 
@@ -961,7 +969,7 @@ class TestCLICapabilityWiring:
         from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
-        for family in ("filesystem", "git", "pytest", "ruff", "mypy"):
+        for family in ("filesystem", "git", "pytest", "ruff", "mypy", "process"):
             matching = [n for n in names if n.startswith(f"mcp__{family}__")]
             assert matching, f"shipped MCP family {family!r} not attached to default boundary"
 

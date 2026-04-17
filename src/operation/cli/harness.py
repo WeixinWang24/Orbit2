@@ -59,16 +59,16 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     # Every MCP family shipped with a server implementation in this repo is
     # wired here so the default operator capability boundary reaches them
     # without any per-session configuration. Governance-overlay-only families
-    # (process / browser / obsidian — their servers aren't shipped by Orbit2
-    # yet) are NOT attached by default: they rely on operator-supplied
-    # bootstraps and are classified by `resolve_mcp_tool_governance` if later
-    # attached explicitly.
+    # (browser / obsidian — their servers aren't shipped by Orbit2 yet) are
+    # NOT attached by default. Process ships a server as of Handoff 24 and
+    # IS attached; its `run_process` tool is approval-required.
     for server_name, module_path in (
         ("filesystem", "src.capability.mcp_servers.filesystem.stdio_server"),
         ("git", "src.capability.mcp_servers.git.stdio_server"),
         ("pytest", "src.capability.mcp_servers.pytest.stdio_server"),
         ("ruff", "src.capability.mcp_servers.ruff.stdio_server"),
         ("mypy", "src.capability.mcp_servers.mypy.stdio_server"),
+        ("process", "src.capability.mcp_servers.process.stdio_server"),
     ):
         attach_mcp_server(
             McpClientBootstrap(

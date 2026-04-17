@@ -1,13 +1,11 @@
-"""Bounded git MCP server for Orbit2 (Handoff 16, first slice).
+"""Bounded git MCP server for Orbit2 (Handoff 16 first slice; Handoff 24 expansion).
 
-Ships with five tools only: `git_status`, `git_diff`, `git_log`, `git_add`,
-`git_commit`. Read tools are classified safe/no-approval; mutation tools are
-approval-required per the family-aware governance overlay at
-`src/capability/mcp/governance.py`.
+Read tools: `git_status`, `git_diff`, `git_log`, `git_show`,
+`git_changed_files`. Classified safe/no-approval.
 
-Not migrated from Orbit1's 673-line git server: `git_show`,
-`git_changed_files`, `git_restore`, `git_unstage`, `git_checkout_branch`.
-Deferred to future slices.
+Mutation tools: `git_add`, `git_commit`, `git_restore`, `git_unstage`,
+`git_checkout_branch`. Approval-required per the family-aware governance
+overlay at `src/capability/mcp/governance.py`.
 
 Runs `git` as a subprocess. The cwd is either the workspace root
 (`ORBIT_WORKSPACE_ROOT` env var, or trailing positional arg at launch) or a
@@ -220,6 +218,148 @@ def _git_add_result(*, paths: list[str], cwd: str | None = None) -> dict[str, An
     }
 
 
+def _git_show_result(
+    rev: str,
+    path: str | None = None,
+    *,
+    cwd: str | None = None,
+    max_chars: int = DEFAULT_MAX_DIFF_CHARS,
+) -> dict[str, Any]:
+    resolved = _resolve_cwd(cwd)
+    if not isinstance(rev, str) or not rev.strip():
+        raise ValueError("rev must be a non-empty string")
+    args = ["show", rev]
+    if isinstance(path, str) and path.strip():
+        args.extend(["--", path])
+    completed = _run_git(args, cwd=resolved)
+    if completed.returncode != 0:
+        raise ValueError((completed.stderr or "git show failed").strip())
+    text, truncated = _truncate(completed.stdout or "", max_chars)
+    return {
+        "ok": True,
+        "cwd": str(resolved),
+        "rev": rev,
+        "path": path,
+        "output": text,
+        "truncated": truncated,
+    }
+
+
+def _git_changed_files_result(cwd: str | None = None) -> dict[str, Any]:
+    status = _git_status_result(cwd=cwd)
+    staged_files = [e["path"] for e in status["staged"]]
+    unstaged_files = [e["path"] for e in status["unstaged"]]
+    untracked_files = status["untracked"]
+    return {
+        "ok": True,
+        "cwd": status["cwd"],
+        "branch": status["branch"],
+        "staged_files": staged_files,
+        "unstaged_files": unstaged_files,
+        "untracked_files": untracked_files,
+        "staged_count": len(staged_files),
+        "unstaged_count": len(unstaged_files),
+        "untracked_count": len(untracked_files),
+        "total_changed_count": len(staged_files) + len(unstaged_files) + len(untracked_files),
+    }
+
+
+def _git_restore_result(paths: list[str], *, cwd: str | None = None) -> dict[str, Any]:
+    resolved = _resolve_cwd(cwd)
+    workspace = _workspace_root()
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("paths must be a non-empty list of strings")
+    for p in paths:
+        if not isinstance(p, str) or not p.strip():
+            raise ValueError("paths entries must be non-empty strings")
+        candidate = Path(p)
+        probe = candidate.resolve() if candidate.is_absolute() else (resolved / candidate).resolve()
+        try:
+            probe.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError(f"paths entry {p!r} escapes workspace") from exc
+    completed = _run_git(["restore", "--worktree", "--source=HEAD", "--", *paths], cwd=resolved)
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "cwd": str(resolved),
+            "mutation_kind": "git_restore",
+            "failure_kind": "git_restore_failed",
+            "stderr": (completed.stderr or "").strip(),
+        }
+    return {
+        "ok": True,
+        "cwd": str(resolved),
+        "mutation_kind": "git_restore",
+        "paths": paths,
+    }
+
+
+def _git_unstage_result(paths: list[str], *, cwd: str | None = None) -> dict[str, Any]:
+    resolved = _resolve_cwd(cwd)
+    workspace = _workspace_root()
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("paths must be a non-empty list of strings")
+    for p in paths:
+        if not isinstance(p, str) or not p.strip():
+            raise ValueError("paths entries must be non-empty strings")
+        candidate = Path(p)
+        probe = candidate.resolve() if candidate.is_absolute() else (resolved / candidate).resolve()
+        try:
+            probe.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError(f"paths entry {p!r} escapes workspace") from exc
+    completed = _run_git(["restore", "--staged", "--", *paths], cwd=resolved)
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "cwd": str(resolved),
+            "mutation_kind": "git_unstage",
+            "failure_kind": "git_unstage_failed",
+            "stderr": (completed.stderr or "").strip(),
+        }
+    return {
+        "ok": True,
+        "cwd": str(resolved),
+        "mutation_kind": "git_unstage",
+        "paths": paths,
+    }
+
+
+def _git_checkout_branch_result(branch: str, *, cwd: str | None = None) -> dict[str, Any]:
+    resolved = _resolve_cwd(cwd)
+    if not isinstance(branch, str) or not branch.strip():
+        raise ValueError("branch must be a non-empty string")
+    verify = _run_git(["rev-parse", "--verify", branch], cwd=resolved)
+    if verify.returncode != 0:
+        return {
+            "ok": False,
+            "cwd": str(resolved),
+            "mutation_kind": "git_checkout_branch",
+            "failure_kind": "branch_not_found",
+            "branch": branch,
+            "stderr": (verify.stderr or "").strip(),
+        }
+    completed = _run_git(["checkout", branch], cwd=resolved)
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "cwd": str(resolved),
+            "mutation_kind": "git_checkout_branch",
+            "failure_kind": "git_checkout_branch_failed",
+            "branch": branch,
+            "stderr": (completed.stderr or "").strip(),
+        }
+    current = _run_git(["branch", "--show-current"], cwd=resolved)
+    current_branch = current.stdout.strip() if current.returncode == 0 else branch
+    return {
+        "ok": True,
+        "cwd": str(resolved),
+        "mutation_kind": "git_checkout_branch",
+        "branch": current_branch,
+    }
+
+
 def _git_commit_result(message: str, *, cwd: str | None = None) -> dict[str, Any]:
     resolved = _resolve_cwd(cwd)
     if not isinstance(message, str) or not message.strip():
@@ -275,6 +415,41 @@ def git_diff(
 def git_log(cwd: str | None = None, limit: int = 10) -> dict[str, Any]:
     """Return recent commit summaries (sha / subject / author / date)."""
     return _git_log_result(cwd=cwd, limit=limit)
+
+
+@mcp.tool()
+def git_show(
+    rev: str,
+    path: str | None = None,
+    cwd: str | None = None,
+    max_chars: int = DEFAULT_MAX_DIFF_CHARS,
+) -> dict[str, Any]:
+    """Show the contents of a commit or file at a given revision."""
+    return _git_show_result(rev, path, cwd=cwd, max_chars=max_chars)
+
+
+@mcp.tool()
+def git_changed_files(cwd: str | None = None) -> dict[str, Any]:
+    """Return staged, unstaged, and untracked file lists (flat names only)."""
+    return _git_changed_files_result(cwd=cwd)
+
+
+@mcp.tool()
+def git_restore(paths: list[str], cwd: str | None = None) -> dict[str, Any]:
+    """Restore workspace files to HEAD state (discards working-tree changes)."""
+    return _git_restore_result(paths, cwd=cwd)
+
+
+@mcp.tool()
+def git_unstage(paths: list[str], cwd: str | None = None) -> dict[str, Any]:
+    """Unstage the given paths (move from index back to working tree)."""
+    return _git_unstage_result(paths, cwd=cwd)
+
+
+@mcp.tool()
+def git_checkout_branch(branch: str, cwd: str | None = None) -> dict[str, Any]:
+    """Switch to an existing branch. Refuses if the branch does not exist."""
+    return _git_checkout_branch_result(branch, cwd=cwd)
 
 
 @mcp.tool()

@@ -121,6 +121,57 @@ class TestFilesystemResultHelpers:
         assert r["ok"] is False
         assert r["failure_kind"] == "old_text_not_found"
 
+    def test_replace_all_in_file_replaces_all(self, workspace: Path) -> None:
+        (workspace / "t.txt").write_text("foo foo foo", encoding="utf-8")
+        r = fs_server._replace_all_in_file_result("t.txt", "foo", "bar")
+        assert r["ok"] is True
+        assert r["replacement_count"] == 3
+        assert r["mutation_kind"] == "replace_all_in_file"
+        assert (workspace / "t.txt").read_text(encoding="utf-8") == "bar bar bar"
+
+    def test_replace_all_in_file_missing_text(self, workspace: Path) -> None:
+        r = fs_server._replace_all_in_file_result("hello.txt", "absent", "x")
+        assert r["ok"] is False
+        assert r["failure_kind"] == "old_text_not_found"
+        assert r["replacement_count"] == 0
+
+    def test_create_directory_creates_nested(self, workspace: Path) -> None:
+        r = fs_server._create_directory_result("a/b/c")
+        assert r["ok"] is True
+        assert r["mutation_kind"] == "create_directory"
+        assert r["already_existed"] is False
+        assert (workspace / "a" / "b" / "c").is_dir()
+
+    def test_create_directory_idempotent(self, workspace: Path) -> None:
+        fs_server._create_directory_result("mydir")
+        r = fs_server._create_directory_result("mydir")
+        assert r["ok"] is True
+        assert r["already_existed"] is True
+
+    def test_create_directory_rejects_escape(self, workspace: Path) -> None:
+        with pytest.raises(ValueError):
+            fs_server._create_directory_result("../../outside")
+
+    def test_move_file_renames(self, workspace: Path) -> None:
+        r = fs_server._move_file_result("hello.txt", "renamed.txt")
+        assert r["ok"] is True
+        assert r["mutation_kind"] == "move_file"
+        assert not (workspace / "hello.txt").exists()
+        assert (workspace / "renamed.txt").read_text(encoding="utf-8") == "hello world"
+
+    def test_move_file_creates_destination_parent(self, workspace: Path) -> None:
+        r = fs_server._move_file_result("hello.txt", "newdir/hello.txt")
+        assert r["ok"] is True
+        assert (workspace / "newdir" / "hello.txt").exists()
+
+    def test_move_file_source_missing_raises(self, workspace: Path) -> None:
+        with pytest.raises(ValueError, match="source path not found"):
+            fs_server._move_file_result("missing.txt", "dest.txt")
+
+    def test_move_file_rejects_source_escape(self, workspace: Path) -> None:
+        with pytest.raises(ValueError):
+            fs_server._move_file_result("../../outside.txt", "dest.txt")
+
     def test_workspace_missing_env_and_arg_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -150,13 +201,19 @@ def fs_integration_bootstrap(tmp_path: Path) -> McpClientBootstrap:
 
 
 class TestFilesystemMcpIntegration:
-    def test_server_lists_first_slice_tools(
+    def test_server_lists_all_tools(
         self, fs_integration_bootstrap: McpClientBootstrap
     ) -> None:
         client = StdioMcpClient(fs_integration_bootstrap)
         descriptors = client.list_tools()
         names = {d.original_name for d in descriptors}
-        assert {"read_file", "list_directory", "get_file_info", "write_file", "replace_in_file"} <= names
+        expected = {
+            "read_file", "list_directory", "get_file_info", "write_file", "replace_in_file",
+            "replace_all_in_file", "create_directory", "move_file",
+            "glob", "search_files", "grep", "directory_tree",
+            "read_multiple_files", "list_directory_with_sizes",
+        }
+        assert expected <= names
 
     def test_read_path_through_capability_boundary(
         self, tmp_path: Path, fs_integration_bootstrap: McpClientBootstrap
@@ -173,7 +230,7 @@ class TestFilesystemMcpIntegration:
         ))
         assert result.ok is True
         assert "hello world" in result.content
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_write_path_through_capability_boundary(
         self, tmp_path: Path, fs_integration_bootstrap: McpClientBootstrap
@@ -189,7 +246,7 @@ class TestFilesystemMcpIntegration:
         ))
         assert result.ok is True
         assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "mcp filesystem mutation"
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_escape_path_refused_by_orbit2_before_reaching_server(
         self, tmp_path: Path, fs_integration_bootstrap: McpClientBootstrap

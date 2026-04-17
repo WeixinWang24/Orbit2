@@ -61,6 +61,10 @@ FILESYSTEM_READ_TOOLS: frozenset[str] = frozenset({
 FILESYSTEM_WRITE_TOOLS: frozenset[str] = frozenset({
     "write_file",
     "replace_in_file",
+    # Handoff 24 mutation widening
+    "replace_all_in_file",
+    "create_directory",
+    "move_file",
 })
 
 # Tools whose semantics require the target path to already exist.
@@ -84,11 +88,18 @@ GIT_READ_TOOLS: frozenset[str] = frozenset({
     "git_status",
     "git_diff",
     "git_log",
+    # Handoff 24 read expansion
+    "git_show",
+    "git_changed_files",
 })
 
 GIT_WRITE_TOOLS: frozenset[str] = frozenset({
     "git_add",
     "git_commit",
+    # Handoff 24 mutation expansion
+    "git_restore",
+    "git_unstage",
+    "git_checkout_branch",
 })
 
 
@@ -103,10 +114,13 @@ GIT_WRITE_TOOLS: frozenset[str] = frozenset({
 # a full persistent-process runtime); governance metadata allows callers who
 # bring their own compatible server to be classified correctly.
 PROCESS_WRITE_TOOLS: frozenset[str] = frozenset({
+    # Orbit1 persistent-handle API (governance-overlay-only, server not yet migrated)
     "start_process",
     "read_process_output",
     "wait_process",
     "terminate_process",
+    # Handoff 24 bounded subprocess bootstrap
+    "run_process",
 })
 
 

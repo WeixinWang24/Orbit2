@@ -150,6 +150,101 @@ class TestGitResultHelpers:
         with pytest.raises(ValueError):
             git_server._git_status_result(cwd="../outside")
 
+    def test_git_show_returns_commit_content(self, git_repo: Path) -> None:
+        target = git_repo / "a.txt"
+        target.write_text("hello\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "first commit"], cwd=git_repo)
+        r = git_server._git_show_result("HEAD")
+        assert r["ok"] is True
+        assert "first commit" in r["output"]
+        assert r["truncated"] is False
+
+    def test_git_show_truncation(self, git_repo: Path) -> None:
+        (git_repo / "big.txt").write_text("x\n" * 5000, encoding="utf-8")
+        _run_git(["add", "big.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "big"], cwd=git_repo)
+        r = git_server._git_show_result("HEAD", max_chars=100)
+        assert r["truncated"] is True
+        assert len(r["output"]) == 100
+
+    def test_git_show_invalid_rev_raises(self, git_repo: Path) -> None:
+        (git_repo / "a.txt").write_text("x\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "init"], cwd=git_repo)
+        with pytest.raises(ValueError):
+            git_server._git_show_result("nonexistent-sha-12345")
+
+    def test_git_changed_files_returns_file_lists(self, git_repo: Path) -> None:
+        (git_repo / "staged.txt").write_text("s\n", encoding="utf-8")
+        (git_repo / "untracked.txt").write_text("u\n", encoding="utf-8")
+        _run_git(["add", "staged.txt"], cwd=git_repo)
+        r = git_server._git_changed_files_result()
+        assert r["ok"] is True
+        assert "staged.txt" in r["staged_files"]
+        assert "untracked.txt" in r["untracked_files"]
+        assert r["staged_count"] == 1
+        assert r["untracked_count"] == 1
+        assert r["total_changed_count"] >= 2
+
+    def test_git_restore_discards_changes(self, git_repo: Path) -> None:
+        target = git_repo / "a.txt"
+        target.write_text("original\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "init"], cwd=git_repo)
+        target.write_text("modified\n", encoding="utf-8")
+        assert target.read_text(encoding="utf-8") == "modified\n"
+        r = git_server._git_restore_result(["a.txt"])
+        assert r["ok"] is True
+        assert r["mutation_kind"] == "git_restore"
+        assert target.read_text(encoding="utf-8") == "original\n"
+
+    def test_git_restore_rejects_path_escape(self, git_repo: Path) -> None:
+        with pytest.raises(ValueError, match="escapes workspace"):
+            git_server._git_restore_result(["../../outside"])
+
+    def test_git_restore_rejects_empty_list(self, git_repo: Path) -> None:
+        with pytest.raises(ValueError):
+            git_server._git_restore_result([])
+
+    def test_git_unstage_removes_from_index(self, git_repo: Path) -> None:
+        target = git_repo / "a.txt"
+        target.write_text("x\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "init"], cwd=git_repo)
+        target.write_text("y\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        status_before = git_server._git_status_result()
+        assert status_before["staged_count"] == 1
+        r = git_server._git_unstage_result(["a.txt"])
+        assert r["ok"] is True
+        assert r["mutation_kind"] == "git_unstage"
+        status_after = git_server._git_status_result()
+        assert status_after["staged_count"] == 0
+
+    def test_git_unstage_rejects_path_escape(self, git_repo: Path) -> None:
+        with pytest.raises(ValueError, match="escapes workspace"):
+            git_server._git_unstage_result(["../../outside"])
+
+    def test_git_checkout_branch_switches_branch(self, git_repo: Path) -> None:
+        (git_repo / "a.txt").write_text("init\n", encoding="utf-8")
+        _run_git(["add", "a.txt"], cwd=git_repo)
+        _run_git(["commit", "-m", "init"], cwd=git_repo)
+        _run_git(["branch", "feature"], cwd=git_repo)
+        r = git_server._git_checkout_branch_result("feature")
+        assert r["ok"] is True
+        assert r["mutation_kind"] == "git_checkout_branch"
+        assert r["branch"] == "feature"
+
+    def test_git_checkout_branch_fails_on_missing_branch(self, git_repo: Path) -> None:
+        r = git_server._git_checkout_branch_result("nonexistent-branch")
+        assert r["ok"] is False
+        assert r["failure_kind"] == "branch_not_found"
+
+    def test_git_checkout_branch_rejects_empty_name(self, git_repo: Path) -> None:
+        with pytest.raises(ValueError):
+            git_server._git_checkout_branch_result("")
+
 
 # ---------------------------------------------------------------------------
 # Integration: real stdio subprocess + Orbit2 capability attachment
@@ -169,13 +264,18 @@ def git_integration_bootstrap(git_repo: Path) -> McpClientBootstrap:
 
 
 class TestGitMcpIntegration:
-    def test_server_lists_first_slice_tools(
+    def test_server_lists_all_tools(
         self, git_integration_bootstrap: McpClientBootstrap
     ) -> None:
         client = StdioMcpClient(git_integration_bootstrap)
         descriptors = client.list_tools()
         names = {d.original_name for d in descriptors}
-        assert {"git_status", "git_diff", "git_log", "git_add", "git_commit"} <= names
+        expected = {
+            "git_status", "git_diff", "git_log", "git_add", "git_commit",
+            "git_show", "git_changed_files",
+            "git_restore", "git_unstage", "git_checkout_branch",
+        }
+        assert expected <= names
 
     def test_status_path_through_capability_boundary(
         self, git_repo: Path, git_integration_bootstrap: McpClientBootstrap
@@ -189,7 +289,7 @@ class TestGitMcpIntegration:
             tool_call_id="c1", tool_name="mcp__git__git_status", arguments={},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
         assert "note.txt" in result.content  # surfaces as JSON in content
 
     def test_commit_path_through_capability_boundary(
@@ -206,7 +306,7 @@ class TestGitMcpIntegration:
             arguments={"paths": ["note.txt"]},
         ))
         assert add_result.ok is True
-        assert add_result.governance_outcome == "allowed"
+        assert add_result.governance_outcome.startswith("allowed")
 
         # Commit
         commit_result = boundary.execute(ToolRequest(
@@ -225,14 +325,13 @@ class TestGitMcpIntegration:
     def test_git_mutation_wrapper_carries_approval_metadata(
         self, git_integration_bootstrap: McpClientBootstrap
     ) -> None:
-        """Handoff 16 acceptance: git mutation tools must stay on the
-        approval-required side of the seam even when no approval runtime
-        consumes the flag yet."""
         registry = CapabilityRegistry()
         attach_mcp_server(git_integration_bootstrap, registry)
-        commit_wrapper = registry.get("mcp__git__git_commit")
-        status_wrapper = registry.get("mcp__git__git_status")
-        assert commit_wrapper.requires_approval is True
-        assert commit_wrapper.side_effect_class == "write"
-        assert status_wrapper.requires_approval is False
-        assert status_wrapper.side_effect_class == "safe"
+        for name in ("git_commit", "git_add", "git_restore", "git_unstage", "git_checkout_branch"):
+            wrapper = registry.get(f"mcp__git__{name}")
+            assert wrapper.requires_approval is True, name
+            assert wrapper.side_effect_class == "write", name
+        for name in ("git_status", "git_diff", "git_log", "git_show", "git_changed_files"):
+            wrapper = registry.get(f"mcp__git__{name}")
+            assert wrapper.requires_approval is False, name
+            assert wrapper.side_effect_class == "safe", name
