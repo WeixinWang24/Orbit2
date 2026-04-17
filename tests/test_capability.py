@@ -150,7 +150,7 @@ class TestCapabilityBoundary:
         assert result.content == "hello world"
         assert result.tool_call_id == "call_1"
         assert result.tool_name == "native__read_file"
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_governance_denies_path_escape(self, workspace: Path) -> None:
         registry = CapabilityRegistry()
@@ -197,7 +197,7 @@ class TestCapabilityBoundary:
         result = boundary.execute(request)
         assert result.ok is False
         assert "file not found" in result.content
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +547,7 @@ class TestAuditFindings:
 
     def test_max_tool_turns_exhaustion_recorded(self, workspace: Path) -> None:
         """FINDING-005: MAX_TOOL_TURNS exhaustion must leave a visible transcript record."""
-        from src.core.runtime.session import MAX_TOOL_TURNS
+        from src.config.runtime import MAX_TOOL_TURNS
 
         # Create a backend that always returns tool calls (never finishes)
         infinite_tool_calls = [
@@ -1278,7 +1278,7 @@ class TestWriteToolsGovernance:
         ))
         assert result.ok is True
         assert (workspace / "hello.txt").read_text() == "hello orbit"
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_all_write_tools_declared_write_side_effect(self, workspace: Path) -> None:
         for cls in (

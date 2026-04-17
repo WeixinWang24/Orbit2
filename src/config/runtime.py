@@ -7,8 +7,9 @@ from pathlib import Path
 RUNTIME_ROOT_ENV = "ORBIT2_RUNTIME_ROOT"
 STORE_SUBDIR = ".runtime"
 DEFAULT_DB_NAME = "sessions.db"
+MAX_TOOL_TURNS = 10
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 @dataclass(frozen=True)

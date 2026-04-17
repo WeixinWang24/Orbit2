@@ -12,7 +12,7 @@ from src.core.store.base import SessionStore
 class SQLiteSessionStore(SessionStore):
     def __init__(self, db_path: str | Path) -> None:
         # db_path is required so the store never silently lands in a cwd-relative
-        # default; runtime.paths.default_db_path is the canonical source.
+        # default; src.config.runtime.default_db_path is the canonical source.
         self._db_path = str(db_path)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.row_factory = sqlite3.Row

@@ -41,7 +41,7 @@ from src.operation.cli.style import (
 from src.core.providers.base import ExecutionBackend
 from src.core.providers.codex import CodexBackend, CodexConfig
 from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
-from src.core.runtime.paths import REPO_ROOT, default_db_path, resolve_runtime_root
+from src.config.runtime import REPO_ROOT, default_db_path, resolve_runtime_root
 from src.core.runtime.session import SessionManager
 from src.core.store.sqlite import SQLiteSessionStore
 

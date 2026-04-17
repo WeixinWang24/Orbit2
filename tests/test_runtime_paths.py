@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.core.runtime.paths import (
+from src.config.runtime import (
     DEFAULT_DB_NAME,
     REPO_ROOT,
     RUNTIME_ROOT_ENV,
@@ -24,7 +24,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestRepoRootDefault:
     def test_repo_root_points_at_checkout_parent_of_src(self, clean_env) -> None:
-        assert (REPO_ROOT / "src" / "core" / "runtime" / "paths.py").exists()
+        assert (REPO_ROOT / "src" / "config" / "runtime.py").exists()
 
     def test_default_resolve_returns_repo_root(self, clean_env) -> None:
         resolved = resolve_runtime_root()
@@ -86,6 +86,27 @@ class TestCwdIsIgnored:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         assert resolve_runtime_root().path == REPO_ROOT
+
+
+class TestConfigCentralization:
+    def test_max_tool_turns_importable_from_config(self) -> None:
+        from src.config.runtime import MAX_TOOL_TURNS
+        assert isinstance(MAX_TOOL_TURNS, int) and MAX_TOOL_TURNS > 0
+
+    def test_max_tool_turns_not_assigned_in_session_source(self) -> None:
+        session_src = (REPO_ROOT / "src" / "core" / "runtime" / "session.py").read_text()
+        assert "MAX_TOOL_TURNS = " not in session_src, (
+            "MAX_TOOL_TURNS should be defined in src.config.runtime, not assigned in session.py"
+        )
+
+    def test_config_package_re_exports_runtime_symbols(self) -> None:
+        import src.config as cfg
+        for sym in ("REPO_ROOT", "RUNTIME_ROOT_ENV", "MAX_TOOL_TURNS", "RuntimeRoot", "resolve_runtime_root", "default_db_path"):
+            assert hasattr(cfg, sym), f"src.config missing re-export: {sym}"
+
+    def test_paths_module_removed_from_core_runtime(self) -> None:
+        from pathlib import Path
+        assert not (REPO_ROOT / "src" / "core" / "runtime" / "paths.py").exists()
 
 
 class TestDbPath:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from src.operation.inspector.web_inspector import serve
-from src.core.runtime.paths import default_db_path, resolve_runtime_root
+from src.config.runtime import default_db_path, resolve_runtime_root
 from src.core.store.sqlite import SQLiteSessionStore
 
 

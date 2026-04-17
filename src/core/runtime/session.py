@@ -25,9 +25,8 @@ from src.core.runtime.models import (
     make_message_id,
     make_session_id,
 )
+from src.config.runtime import MAX_TOOL_TURNS
 from src.core.store.base import SessionStore
-
-MAX_TOOL_TURNS = 10
 
 
 class CapabilityBoundaryUnavailableError(RuntimeError):
