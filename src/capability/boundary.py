@@ -11,7 +11,7 @@ from src.capability.models import (
 from src.capability.mcp.wrapper import GOVERNANCE_DENIED_MARKER
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import Tool
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 class CapabilityBoundary:

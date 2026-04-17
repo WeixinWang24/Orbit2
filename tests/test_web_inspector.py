@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.inspector.web_inspector import (
+from src.operation.inspector.web_inspector import (
     VIO_INSPIRED_CSS,
     _VALID_MAIN_TABS,
     _VALID_RIGHT_TABS,
@@ -31,7 +31,7 @@ from src.inspector.web_inspector import (
     _truncate_text,
     serve,
 )
-from src.runtime.models import (
+from src.core.runtime.models import (
     ConversationMessage,
     MessageRole,
     Session,
@@ -39,7 +39,7 @@ from src.runtime.models import (
     make_message_id,
     make_session_id,
 )
-from src.store.sqlite import SQLiteSessionStore
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 # ---------------------------------------------------------------------------

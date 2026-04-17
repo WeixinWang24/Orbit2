@@ -1,18 +1,3 @@
-"""Display-width-aware input composer for Orbit2 CLI.
-
-Provides CJK-safe input handling with correct cursor positioning and
-backspace boundaries. Salvaged from Orbit1 composer_state.py, simplified
-for the Orbit2 CLI operator surface.
-
-Design rules:
-- Cursor position tracks display width, not byte offset.
-- Backspace deletes one character (even if 2-column wide) and never
-  escapes past the prompt boundary.
-- Arrow keys move by character, accounting for display width.
-- All CSI escape sequences are fully consumed so no trailing bytes
-  leak into text input.
-"""
-
 from __future__ import annotations
 
 import os

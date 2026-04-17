@@ -1,23 +1,3 @@
-"""Runtime/workspace/store root resolution.
-
-Single source of truth for Orbit2's effective runtime root. The runtime owns
-this decision, not CLI or inspector convenience state. All operator surfaces
-(CLI, inspector) MUST route through `resolve_runtime_root` so they agree on
-which store root they are bound to.
-
-Resolution priority (highest first):
-  1. Explicit `override` argument (e.g., CLI flag)
-  2. `ORBIT2_RUNTIME_ROOT` environment variable
-  3. `REPO_ROOT` (code-path anchor of the Orbit2 checkout)
-
-Process cwd is NEVER consulted. Any relative `override` is resolved against
-cwd only at the call site's discretion before being passed in.
-
-Resolution is pure: it returns a path and the source label but does NOT create
-directories. Materialization happens in `default_db_path`, which is called
-only by callers that actually intend to persist.
-"""
-
 from __future__ import annotations
 
 import os
@@ -28,7 +8,7 @@ RUNTIME_ROOT_ENV = "ORBIT2_RUNTIME_ROOT"
 STORE_SUBDIR = ".runtime"
 DEFAULT_DB_NAME = "sessions.db"
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 @dataclass(frozen=True)

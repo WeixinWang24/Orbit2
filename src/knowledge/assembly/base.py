@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from src.runtime.models import ConversationMessage, TurnRequest
+from src.core.runtime.models import ConversationMessage, TurnRequest
 
 
 class ContextAssembler(ABC):

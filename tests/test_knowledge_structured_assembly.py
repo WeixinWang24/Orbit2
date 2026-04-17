@@ -11,15 +11,15 @@ from src.knowledge import (
     ContextFragment,
     StructuredContextAssembler,
 )
-from src.providers.base import ExecutionBackend
-from src.runtime.models import (
+from src.core.providers.base import ExecutionBackend
+from src.core.runtime.models import (
     ConversationMessage,
     ExecutionPlan,
     MessageRole,
     TurnRequest,
 )
-from src.runtime.session import SessionManager
-from src.store.sqlite import SQLiteSessionStore
+from src.core.runtime.session import SessionManager
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 def _msg(role: MessageRole, content: str, turn_index: int, session_id: str = "s1") -> ConversationMessage:

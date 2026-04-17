@@ -4,7 +4,7 @@ import copy
 
 from src.knowledge.assembly.base import ContextAssembler
 from src.knowledge.models import AssembledContext, ContextFragment
-from src.runtime.models import ConversationMessage, TurnRequest
+from src.core.runtime.models import ConversationMessage, TurnRequest
 
 SESSION_SYSTEM_PROMPT_FRAGMENT_NAME = "session_system_prompt"
 SESSION_SYSTEM_PROMPT_PRIORITY = 100

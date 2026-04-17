@@ -5,8 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.runtime.models import ConversationMessage, MessageRole, Session, SessionStatus
-from src.store.base import SessionStore
+from src.core.runtime.models import ConversationMessage, MessageRole, Session, SessionStatus
+from src.core.store.base import SessionStore
 
 
 class SQLiteSessionStore(SessionStore):

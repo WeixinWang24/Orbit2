@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 
-from src.inspector.web_inspector import serve
-from src.runtime.paths import default_db_path, resolve_runtime_root
-from src.store.sqlite import SQLiteSessionStore
+from src.operation.inspector.web_inspector import serve
+from src.core.runtime.paths import default_db_path, resolve_runtime_root
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 def main() -> None:

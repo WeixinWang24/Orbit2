@@ -16,7 +16,7 @@ from src.capability.mcp import (
 )
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp_servers.ruff import stdio_server as ruff_server
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 _RUFF_MODULE = "src.capability.mcp_servers.ruff.stdio_server"

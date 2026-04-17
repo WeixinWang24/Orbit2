@@ -16,7 +16,7 @@ from src.capability.mcp import (
 )
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp_servers.mypy import stdio_server as mypy_server
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 _MYPY_MODULE = "src.capability.mcp_servers.mypy.stdio_server"

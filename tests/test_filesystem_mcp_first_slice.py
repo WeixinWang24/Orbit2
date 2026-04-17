@@ -20,7 +20,7 @@ from src.capability.mcp import (
 )
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp_servers.filesystem import stdio_server as fs_server
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 _FS_MODULE = "src.capability.mcp_servers.filesystem.stdio_server"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.runtime.paths import (
+from src.core.runtime.paths import (
     DEFAULT_DB_NAME,
     REPO_ROOT,
     RUNTIME_ROOT_ENV,
@@ -24,7 +24,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestRepoRootDefault:
     def test_repo_root_points_at_checkout_parent_of_src(self, clean_env) -> None:
-        assert (REPO_ROOT / "src" / "runtime" / "paths.py").exists()
+        assert (REPO_ROOT / "src" / "core" / "runtime" / "paths.py").exists()
 
     def test_default_resolve_returns_repo_root(self, clean_env) -> None:
         resolved = resolve_runtime_root()

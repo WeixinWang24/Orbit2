@@ -22,7 +22,7 @@ from src.capability.mcp import (
 )
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp_servers.git import stdio_server as git_server
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 _GIT_MODULE = "src.capability.mcp_servers.git.stdio_server"

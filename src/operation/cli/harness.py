@@ -17,8 +17,8 @@ from src.capability.tools import (
     ReplaceInFileTool,
     WriteFileTool,
 )
-from src.cli.composer import ComposerAction, PageDownAction, PageUpAction
-from src.cli.style import (
+from src.operation.cli.composer import ComposerAction, PageDownAction, PageUpAction
+from src.operation.cli.style import (
     ACCENT_ASSISTANT,
     ACCENT_ERROR,
     ACCENT_MUTED,
@@ -33,12 +33,12 @@ from src.cli.style import (
     RESET,
     divider,
 )
-from src.providers.base import ExecutionBackend
-from src.providers.codex import CodexBackend, CodexConfig
-from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
-from src.runtime.paths import REPO_ROOT, default_db_path, resolve_runtime_root
-from src.runtime.session import SessionManager
-from src.store.sqlite import SQLiteSessionStore
+from src.core.providers.base import ExecutionBackend
+from src.core.providers.codex import CodexBackend, CodexConfig
+from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+from src.core.runtime.paths import REPO_ROOT, default_db_path, resolve_runtime_root
+from src.core.runtime.session import SessionManager
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
@@ -102,7 +102,7 @@ def _read_input(prompt: str) -> str:
     """
     if sys.stdin.isatty():
         try:
-            from src.cli.composer import read_line
+            from src.operation.cli.composer import read_line
             return read_line(prompt)
         except (ImportError, OSError):
             pass

@@ -15,7 +15,7 @@ from src.capability.mcp import (
 )
 from src.capability.registry import CapabilityRegistry
 from src.capability.mcp_servers.pytest import stdio_server as pytest_server
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 _PYTEST_MODULE = "src.capability.mcp_servers.pytest.stdio_server"

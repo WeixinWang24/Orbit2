@@ -4,7 +4,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.runtime.models import ConversationMessage, Message, MessageRole, TurnRequest
+from src.core.runtime.models import ConversationMessage, Message, MessageRole, TurnRequest
 
 
 @dataclass

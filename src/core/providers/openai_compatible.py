@@ -5,13 +5,13 @@ from typing import Callable, Optional
 
 import openai
 
-from src.runtime.models import (
+from src.core.runtime.models import (
     TurnRequest,
     ProviderNormalizedResult,
     ExecutionPlan,
     ToolRequest,
 )
-from src.providers.base import BackendConfig, ExecutionBackend
+from src.core.providers.base import BackendConfig, ExecutionBackend
 
 
 class OpenAICompatibleConfig(BackendConfig):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.knowledge.assembly.base import ContextAssembler
-from src.runtime.models import ConversationMessage, Message, MessageRole, TurnRequest
+from src.core.runtime.models import ConversationMessage, Message, MessageRole, TurnRequest
 
 
 class TranscriptContextAssembler(ContextAssembler):

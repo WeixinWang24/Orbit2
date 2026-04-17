@@ -30,7 +30,7 @@ from src.capability.mcp.client import McpClient
 from src.capability.mcp.models import build_orbit_tool_name
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import ReadFileTool
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

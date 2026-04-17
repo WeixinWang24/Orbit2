@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from src.runtime.models import ConversationMessage, Session
+from src.core.runtime.models import ConversationMessage, Session
 
 
 class SessionStore(ABC):

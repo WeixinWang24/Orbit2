@@ -31,7 +31,7 @@ from src.capability.mcp import (
 )
 from src.capability.models import ToolResult
 from src.capability.registry import CapabilityRegistry
-from src.runtime.models import ToolRequest
+from src.core.runtime.models import ToolRequest
 
 
 # ---------------------------------------------------------------------------

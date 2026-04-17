@@ -5,7 +5,7 @@ from typing import Callable
 
 from pydantic import BaseModel
 
-from src.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan
+from src.core.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan
 
 
 class BackendConfig(BaseModel):

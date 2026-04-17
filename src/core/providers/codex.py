@@ -7,9 +7,9 @@ from typing import Callable, Optional
 
 from pydantic import BaseModel
 
-from src.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan, ToolRequest
-from src.providers.base import BackendConfig, ExecutionBackend
-from src.transports.codex_sse import CodexHttpError, CodexSSEEvent, stream_sse_events
+from src.core.runtime.models import TurnRequest, ProviderNormalizedResult, ExecutionPlan, ToolRequest
+from src.core.providers.base import BackendConfig, ExecutionBackend
+from src.core.transports.codex_sse import CodexHttpError, CodexSSEEvent, stream_sse_events
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api"
 DEFAULT_CREDENTIAL_PATH = ".runtime/openai_oauth_credentials.json"

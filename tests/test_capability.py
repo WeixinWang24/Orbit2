@@ -33,8 +33,8 @@ from src.capability.tools import (
     WriteFileTool,
 )
 from src.knowledge.assembly import TranscriptContextAssembler
-from src.providers.base import ExecutionBackend
-from src.runtime.models import (
+from src.core.providers.base import ExecutionBackend
+from src.core.runtime.models import (
     ConversationMessage,
     ExecutionPlan,
     Message,
@@ -42,8 +42,8 @@ from src.runtime.models import (
     ToolRequest,
     TurnRequest,
 )
-from src.runtime.session import CapabilityBoundaryUnavailableError, SessionManager
-from src.store.sqlite import SQLiteSessionStore
+from src.core.runtime.session import CapabilityBoundaryUnavailableError, SessionManager
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +433,7 @@ class TestAssemblerToolMessages:
 
 class TestOpenAIToolFormatting:
     def test_build_chat_messages_with_tool_calls(self) -> None:
-        from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+        from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
 
         backend = OpenAICompatibleBackend(OpenAICompatibleConfig())
         request = TurnRequest(
@@ -465,7 +465,7 @@ class TestOpenAIToolFormatting:
         assert tool_msg["tool_call_id"] == "c1"
 
     def test_build_tools_from_definitions(self) -> None:
-        from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+        from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
 
         backend = OpenAICompatibleBackend(OpenAICompatibleConfig())
         request = TurnRequest(
@@ -481,7 +481,7 @@ class TestOpenAIToolFormatting:
         assert tools[0]["function"]["name"] == "my_tool"
 
     def test_build_tools_none_when_no_definitions(self) -> None:
-        from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+        from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
 
         backend = OpenAICompatibleBackend(OpenAICompatibleConfig())
         request = TurnRequest(messages=[Message(role="user", content="hi")])
@@ -547,7 +547,7 @@ class TestAuditFindings:
 
     def test_max_tool_turns_exhaustion_recorded(self, workspace: Path) -> None:
         """FINDING-005: MAX_TOOL_TURNS exhaustion must leave a visible transcript record."""
-        from src.runtime.session import MAX_TOOL_TURNS
+        from src.core.runtime.session import MAX_TOOL_TURNS
 
         # Create a backend that always returns tool calls (never finishes)
         infinite_tool_calls = [
@@ -609,7 +609,7 @@ class TestAuditFindings:
 
     def test_malformed_json_arguments_handled(self) -> None:
         """FINDING-003: Malformed JSON in tool arguments should not crash."""
-        from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+        from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
 
         class FakeFunction:
             def __init__(self, name, arguments):
@@ -661,7 +661,7 @@ class TestCodexToolSupport:
     """Tests for Codex backend tool definition injection and function_call parsing."""
 
     def _make_codex_backend(self, tmp_path: Path):
-        from src.providers.codex import CodexBackend, CodexConfig
+        from src.core.providers.codex import CodexBackend, CodexConfig
         credential_path = tmp_path / "cred.json"
         credential_path.write_text(
             '{"access_token":"tok","refresh_token":"ref",'
@@ -692,7 +692,7 @@ class TestCodexToolSupport:
 
     def test_codex_normalizes_via_output_item_done(self, tmp_path: Path) -> None:
         """Primary path: response.output_item.done has all fields (real Codex API format)."""
-        from src.transports.codex_sse import CodexSSEEvent
+        from src.core.transports.codex_sse import CodexSSEEvent
         backend = self._make_codex_backend(tmp_path)
         # Real Codex API event sequence (from .runtime/last_events.json capture)
         events = [
@@ -773,7 +773,7 @@ class TestCodexToolSupport:
         assert fc_item["call_id"] == "call_xyz"
 
     def test_codex_malformed_function_call_args(self, tmp_path: Path) -> None:
-        from src.transports.codex_sse import CodexSSEEvent
+        from src.core.transports.codex_sse import CodexSSEEvent
         backend = self._make_codex_backend(tmp_path)
         events = [
             CodexSSEEvent(
@@ -794,7 +794,7 @@ class TestCodexToolSupport:
 
     def test_codex_fallback_to_response_completed_output(self, tmp_path: Path) -> None:
         """Fallback: when no output_item.done fires, use response.completed output items."""
-        from src.transports.codex_sse import CodexSSEEvent
+        from src.core.transports.codex_sse import CodexSSEEvent
         backend = self._make_codex_backend(tmp_path)
         events = [
             CodexSSEEvent(
@@ -922,7 +922,7 @@ class TestCLICapabilityWiring:
         operators reach it through Orbit2 capability closure without per-session
         configuration. Families whose servers are NOT shipped by Orbit2
         (process / browser / obsidian) are deliberately absent."""
-        from src.cli.harness import _build_capability_boundary
+        from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
         assert names == {
@@ -951,7 +951,7 @@ class TestCLICapabilityWiring:
         """One-line sentinel: for each MCP family that ships a server module
         under `src/capability/mcp_servers/`, at least one tool must be in the
         default boundary. Catches 'shipped but not wired' regressions directly."""
-        from src.cli.harness import _build_capability_boundary
+        from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
         for family in ("filesystem", "git", "pytest", "ruff", "mypy"):
@@ -959,7 +959,7 @@ class TestCLICapabilityWiring:
             assert matching, f"shipped MCP family {family!r} not attached to default boundary"
 
     def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:
-        from src.cli.harness import _build_capability_boundary
+        from src.operation.cli.harness import _build_capability_boundary
         store = SQLiteSessionStore(db_path=":memory:")
         backend = ToolCallBackend([])
         boundary = _build_capability_boundary(workspace)
@@ -1019,7 +1019,7 @@ class TestCodexInputIdField:
     """function_call items must include correct 'id' (fc_ prefix) for Responses API."""
 
     def test_function_call_item_uses_provider_item_id(self, tmp_path: Path) -> None:
-        from src.providers.codex import CodexBackend, CodexConfig
+        from src.core.providers.codex import CodexBackend, CodexConfig
         import time
         credential_path = tmp_path / "cred.json"
         credential_path.write_text(

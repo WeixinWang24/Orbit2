@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from src.knowledge.assembly import ContextAssembler, StructuredContextAssembler
-from src.providers.base import ExecutionBackend
-from src.runtime.models import (
+from src.core.providers.base import ExecutionBackend
+from src.core.runtime.models import (
     ConversationMessage,
     ExecutionPlan,
     MessageRole,
@@ -14,7 +14,7 @@ from src.runtime.models import (
     make_message_id,
     make_session_id,
 )
-from src.store.base import SessionStore
+from src.core.store.base import SessionStore
 
 MAX_TOOL_TURNS = 10
 

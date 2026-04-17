@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.cli.harness import _run_interactive, _show_history, main
+from src.operation.cli.harness import _run_interactive, _show_history, main
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\[\?[0-9]+[hl]|\x1b\[[0-9]*[A-Za-z]")
@@ -17,10 +17,10 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\[\?[0-9]+[hl]|\x1b\[[0-9]*[A-Za-z]")
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
-from src.providers.base import ExecutionBackend
-from src.runtime.models import ExecutionPlan, Message, TurnRequest
-from src.runtime.session import SessionManager
-from src.store.sqlite import SQLiteSessionStore
+from src.core.providers.base import ExecutionBackend
+from src.core.runtime.models import ExecutionPlan, Message, TurnRequest
+from src.core.runtime.session import SessionManager
+from src.core.store.sqlite import SQLiteSessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ def test_main_delegates_to_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_main():
         called["cli"] = True
 
-    monkeypatch.setattr("src.cli.harness.main", fake_main)
+    monkeypatch.setattr("src.operation.cli.harness.main", fake_main)
     import main as main_module
     monkeypatch.setattr(main_module, "main", fake_main)
     fake_main()
@@ -260,7 +260,7 @@ def test_show_history_truncates_long_content(streaming_manager: SessionManager, 
 # Composer: display_width
 # ---------------------------------------------------------------------------
 
-from src.cli.composer import display_width
+from src.operation.cli.composer import display_width
 
 
 class TestDisplayWidth:
@@ -346,7 +346,7 @@ class TestComposerBackspaceBoundary:
 # Style: color constants and helpers
 # ---------------------------------------------------------------------------
 
-from src.cli.style import RESET, BOLD, DIM, ACCENT_USER, ACCENT_ASSISTANT, divider, styled
+from src.operation.cli.style import RESET, BOLD, DIM, ACCENT_USER, ACCENT_ASSISTANT, divider, styled
 
 
 class TestStyle:
@@ -400,7 +400,7 @@ class TestCLIHeader:
 # Session navigation: /sessions, /switch, /new
 # ---------------------------------------------------------------------------
 
-from src.cli.harness import _show_sessions, _handle_switch, _handle_delete_all
+from src.operation.cli.harness import _show_sessions, _handle_switch, _handle_delete_all
 
 
 class TestSessionNavigation:
@@ -627,7 +627,7 @@ class TestStoreDeleteAll:
 
 import os
 
-from src.cli.composer import (
+from src.operation.cli.composer import (
     ComposerAction,
     PageDownAction,
     PageUpAction,
@@ -715,7 +715,7 @@ class TestCSISequenceParsing:
 # Page Up / Page Down session switching
 # ---------------------------------------------------------------------------
 
-from src.cli.harness import _switch_session_relative
+from src.operation.cli.harness import _switch_session_relative
 
 
 class TestPageUpDownSessionSwitch:

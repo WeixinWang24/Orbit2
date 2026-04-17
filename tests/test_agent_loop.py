@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.runtime.models import (
+from src.core.runtime.models import (
     ConversationMessage,
     ExecutionPlan,
     Message,
@@ -15,18 +15,18 @@ from src.runtime.models import (
     SessionStatus,
     TurnRequest,
 )
-from src.runtime.session import SessionManager
-from src.providers.base import ExecutionBackend
-from src.providers.codex import (
+from src.core.runtime.session import SessionManager
+from src.core.providers.base import ExecutionBackend
+from src.core.providers.codex import (
     CodexBackend,
     CodexConfig,
     OAuthCredential,
     load_oauth_credential,
 )
-from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
-from src.store.base import SessionStore
-from src.store.sqlite import SQLiteSessionStore
-from src.transports.codex_sse import CodexHttpError, CodexSSEEvent
+from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+from src.core.store.base import SessionStore
+from src.core.store.sqlite import SQLiteSessionStore
+from src.core.transports.codex_sse import CodexHttpError, CodexSSEEvent
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +327,7 @@ def test_codex_backend_plan_from_messages_handles_transport_failure(
     def fake_stream_sse_events(**kwargs):
         raise CodexHttpError("Codex HTTP error 401: unauthorized")
 
-    monkeypatch.setattr("src.providers.codex.stream_sse_events", fake_stream_sse_events)
+    monkeypatch.setattr("src.core.providers.codex.stream_sse_events", fake_stream_sse_events)
     plan = backend.plan_from_messages(sample_request)
     assert plan.plan_label == "openai-codex-transport-failure"
     assert plan.final_text is None

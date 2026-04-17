@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from src.store.sqlite import SQLiteSessionStore
+from src.core.store.sqlite import SQLiteSessionStore
 
 _VALID_MAIN_TABS = {"transcript", "debug"}
 _VALID_RIGHT_TABS = {"metadata", "raw"}
