@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from src.capability.discovery import DISCOVERY_TOOL_NAME
-from src.knowledge.assembly import ContextAssembler, StructuredContextAssembler
+from src.knowledge.assembly import (
+    AssemblyDebugEnvelope,
+    ContextAssembler,
+    StructuredContextAssembler,
+    build_envelope,
+)
 from src.knowledge.exposure import (
     ExposureDecision,
     compute_exposed_tools,
@@ -46,6 +51,12 @@ class SessionManager:
         # raises before reaching the boundary branch leaves the previous
         # decision visible for post-mortem inspection.
         self._last_exposure_decision: ExposureDecision | None = None
+        # Assembly debug envelope captured at the most recent planning call.
+        # Consumed by run_turn when writing the subsequent assistant message
+        # so the envelope is persisted alongside the transcript turn it
+        # actually corresponds to. Purely a projection artifact — the
+        # envelope never feeds back into assembly or routing.
+        self._last_assembly_envelope: AssemblyDebugEnvelope | None = None
         # Wire the discovery tool's summary to the manager's live exposure
         # decision so the model sees a summary consistent with the tool
         # definitions it actually receives this turn. Lookup is best-effort:
@@ -120,6 +131,14 @@ class SessionManager:
             turn_index = self._next_turn_index(session_id)
 
             # Save assistant message with tool_calls metadata
+            assistant_metadata: dict = {
+                "source_backend": plan.source_backend,
+                "model": plan.model,
+                "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
+            }
+            envelope = self._envelope_metadata_snapshot()
+            if envelope is not None:
+                assistant_metadata["assembly_envelope"] = envelope
             self._store.save_message(ConversationMessage(
                 message_id=make_message_id(),
                 session_id=session_id,
@@ -127,17 +146,13 @@ class SessionManager:
                 content=plan.final_text or "",
                 turn_index=turn_index,
                 created_at=datetime.now(timezone.utc),
-                metadata={
-                    "source_backend": plan.source_backend,
-                    "model": plan.model,
-                    "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
-                },
+                metadata=assistant_metadata,
             ))
 
             # Execute each tool through the governed capability boundary
             for tr in plan.tool_requests:
                 turn_index = self._next_turn_index(session_id)
-                result = self._capability_boundary.execute(tr)
+                result = self._capability_boundary.execute(tr, session_id=session_id)
                 tool_metadata: dict = {
                     "tool_call_id": result.tool_call_id,
                     "tool_name": result.tool_name,
@@ -179,6 +194,15 @@ class SessionManager:
         # and a sentinel tool result so the transcript is never silently truncated
         if plan.tool_requests and tool_loops >= MAX_TOOL_TURNS:
             turn_index = self._next_turn_index(session_id)
+            exhausted_metadata: dict = {
+                "source_backend": plan.source_backend,
+                "model": plan.model,
+                "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
+                "tool_loop_exhausted": True,
+            }
+            envelope = self._envelope_metadata_snapshot()
+            if envelope is not None:
+                exhausted_metadata["assembly_envelope"] = envelope
             self._store.save_message(ConversationMessage(
                 message_id=make_message_id(),
                 session_id=session_id,
@@ -186,12 +210,7 @@ class SessionManager:
                 content=plan.final_text or "",
                 turn_index=turn_index,
                 created_at=datetime.now(timezone.utc),
-                metadata={
-                    "source_backend": plan.source_backend,
-                    "model": plan.model,
-                    "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
-                    "tool_loop_exhausted": True,
-                },
+                metadata=exhausted_metadata,
             ))
             for tr in plan.tool_requests:
                 turn_index = self._next_turn_index(session_id)
@@ -211,6 +230,13 @@ class SessionManager:
                 ))
         elif plan.final_text is not None:
             turn_index = self._next_turn_index(session_id)
+            final_metadata: dict = {
+                "source_backend": plan.source_backend,
+                "model": plan.model,
+            }
+            envelope = self._envelope_metadata_snapshot()
+            if envelope is not None:
+                final_metadata["assembly_envelope"] = envelope
             self._store.save_message(ConversationMessage(
                 message_id=make_message_id(),
                 session_id=session_id,
@@ -218,10 +244,7 @@ class SessionManager:
                 content=plan.final_text,
                 turn_index=turn_index,
                 created_at=datetime.now(timezone.utc),
-                metadata={
-                    "source_backend": plan.source_backend,
-                    "model": plan.model,
-                },
+                metadata=final_metadata,
             ))
 
         updated = session.model_copy(update={"updated_at": datetime.now(timezone.utc)})
@@ -236,8 +259,21 @@ class SessionManager:
         on_partial_text: Callable[[str], None] | None,
     ) -> ExecutionPlan:
         all_messages = self._store.list_messages(session_id)
-        request = self._assembler.assemble(all_messages, system_prompt=session.system_prompt)
+        # Prefer the structured intermediate when the assembler exposes it so
+        # the debug envelope can project instruction fragments. Fall back to
+        # the plain assemble() path for assemblers without that shape.
+        assembled_context = None
+        if hasattr(self._assembler, "assemble_structured"):
+            assembled_context = self._assembler.assemble_structured(
+                all_messages, system_prompt=session.system_prompt,
+            )
+            request = assembled_context.to_turn_request()
+        else:
+            request = self._assembler.assemble(
+                all_messages, system_prompt=session.system_prompt,
+            )
 
+        decision: ExposureDecision | None = None
         if self._capability_boundary is not None:
             full_definitions = [
                 d.model_dump() for d in self._capability_boundary.list_definitions()
@@ -254,7 +290,29 @@ class SessionManager:
                 full_definitions, decision.exposed_tool_names
             )
 
+        # Build the envelope AFTER exposure has been applied to `request`,
+        # so snapshots match what the backend actually received. Each call
+        # to `_plan_with_tools` overwrites `_last_assembly_envelope`; the
+        # pairing invariant is that every assistant-message write site in
+        # `run_turn` snapshots the envelope immediately for the plan that
+        # was just produced, before the next `_plan_with_tools` call can
+        # overwrite it. If a future `build_envelope` extension reads
+        # `request.tool_definitions`, it will see the filtered list.
+        self._last_assembly_envelope = build_envelope(
+            assembler_name=type(self._assembler).__name__,
+            transcript_message_count=len(all_messages),
+            request=request,
+            assembled_context=assembled_context,
+            exposure_decision=decision,
+        )
+
         return self._backend.plan_from_messages(request, on_partial_text=on_partial_text)
+
+    def _envelope_metadata_snapshot(self) -> dict | None:
+        envelope = self._last_assembly_envelope
+        if envelope is None:
+            return None
+        return envelope.to_metadata_dict()
 
     def _wire_discovery_exposure_provider(self) -> None:
         if self._capability_boundary is None:

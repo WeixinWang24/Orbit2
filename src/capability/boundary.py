@@ -12,6 +12,11 @@ from src.capability.mcp.wrapper import GOVERNANCE_DENIED_MARKER
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import Tool
 from src.core.runtime.models import ToolRequest
+from src.governance.approval import (
+    ApprovalDecision,
+    ApprovalGate,
+    ApprovalRequest,
+)
 
 
 class CapabilityBoundary:
@@ -19,9 +24,16 @@ class CapabilityBoundary:
         self,
         registry: CapabilityRegistry,
         workspace_root: Path,
+        *,
+        approval_gate: ApprovalGate | None = None,
     ) -> None:
         self._registry = registry
         self._workspace_root = workspace_root.resolve()
+        self._approval_gate = approval_gate
+
+    @property
+    def approval_gate(self) -> ApprovalGate | None:
+        return self._approval_gate
 
     @property
     def registry(self) -> CapabilityRegistry:
@@ -30,7 +42,12 @@ class CapabilityBoundary:
     def list_definitions(self) -> list[ToolDefinition]:
         return self._registry.list_definitions()
 
-    def execute(self, request: ToolRequest) -> CapabilityResult:
+    def execute(
+        self,
+        request: ToolRequest,
+        *,
+        session_id: str | None = None,
+    ) -> CapabilityResult:
         tool = self._registry.get(request.tool_name)
         if tool is None:
             available = ", ".join(self._registry.list_names()) or "(none)"
@@ -63,8 +80,56 @@ class CapabilityBoundary:
                 governance_outcome="denied_invalid_arguments",
             )
 
+        # Approval gate (Governance Surface): consulted only for tools that
+        # declare `requires_approval=True` and only when a gate is attached.
+        # Without a gate the boundary still executes the tool but marks the
+        # call `allowed_no_gate` so post-hoc transcript review can tell
+        # ungated executions apart from gate-approved ones.
+        approval_outcome_reason: str | None = None
+        if tool.requires_approval:
+            if self._approval_gate is None:
+                # No gate attached — record the bypass explicitly in the
+                # governance outcome rather than collapsing it into the
+                # default `"allowed"` string.
+                approval_outcome_reason = "no_gate"
+            else:
+                if not session_id:
+                    # Approval semantics require a non-empty session context
+                    # to scope reuse memory. Refusing explicitly is safer
+                    # than allowing without scope: a caller passing
+                    # `session_id=""` or `None` would otherwise share one
+                    # de-facto approval bucket across unrelated flows.
+                    return CapabilityResult(
+                        tool_call_id=request.tool_call_id,
+                        tool_name=request.tool_name,
+                        ok=False,
+                        content="governance denied: approval required but no session context",
+                        governance_outcome="denied: approval_required_no_session",
+                    )
+                outcome = self._approval_gate.resolve(ApprovalRequest(
+                    session_id=session_id,
+                    tool_name=request.tool_name,
+                    reveal_group=tool.reveal_group,
+                    side_effect_class=tool.side_effect_class,
+                    requires_approval=True,
+                    arguments=dict(request.arguments),
+                    summary=tool.definition.description,
+                ))
+                if outcome.decision == ApprovalDecision.DENY:
+                    return CapabilityResult(
+                        tool_call_id=request.tool_call_id,
+                        tool_name=request.tool_name,
+                        ok=False,
+                        content="governance denied: operator denied approval",
+                        governance_outcome=f"denied: {outcome.reason}",
+                    )
+                approval_outcome_reason = outcome.reason
+
         result = tool.execute(**request.arguments)
-        governance_outcome = "allowed"
+        if approval_outcome_reason is not None:
+            governance_outcome = f"allowed: {approval_outcome_reason}"
+        else:
+            governance_outcome = "allowed"
         if result.data is not None:
             # Tool-layer governance denials (e.g. family-aware MCP wrappers)
             # surface through a data marker so the boundary reports them as a

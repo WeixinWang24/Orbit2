@@ -18,7 +18,11 @@ from src.capability.tools import (
     ReplaceInFileTool,
     WriteFileTool,
 )
+from src.governance.approval import ApprovalGate, ApprovalMemory
+from src.governance.policies import RevealGroupSessionApprovalPolicy
+from src.operation.cli.approval import CLIApprovalInteractor
 from src.operation.cli.composer import ComposerAction, PageDownAction, PageUpAction
+from src.operation.cli.markdown import render_markdown_for_terminal
 from src.operation.cli.style import (
     ACCENT_ASSISTANT,
     ACCENT_ERROR,
@@ -82,7 +86,19 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     # `discovery` reveal group via the tool class itself.
     registry.register(ListAvailableToolsTool(registry))
 
-    return CapabilityBoundary(registry, workspace_root)
+    # Governance Surface approval gate (Handoff 20). Default policy is
+    # session-scope reveal-group reuse. Interactor prompts via stdin on the
+    # CLI operator surface; approval truth stays with the gate, not CLI.
+    approval_memory = ApprovalMemory()
+    approval_policy = RevealGroupSessionApprovalPolicy(memory=approval_memory)
+    approval_interactor = CLIApprovalInteractor()
+    approval_gate = ApprovalGate(
+        policy=approval_policy,
+        interactor=approval_interactor,
+    )
+    return CapabilityBoundary(
+        registry, workspace_root, approval_gate=approval_gate,
+    )
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
@@ -145,7 +161,12 @@ def _switch_session_relative(
     return None
 
 
-def _run_interactive(manager: SessionManager, session_id: str) -> None:
+def _run_interactive(
+    manager: SessionManager,
+    session_id: str,
+    *,
+    boundary: CapabilityBoundary | None = None,
+) -> None:
     active_session_id = session_id
     session = manager.get_session(active_session_id)
     width = _term_width()
@@ -159,7 +180,8 @@ def _run_interactive(manager: SessionManager, session_id: str) -> None:
     )
     _write(divider(width) + "\n")
     _write(
-        f"{DIM}Commands: /quit  /history  /clear  /sessions  /switch  /new  /delete-all{RESET}\n\n"
+        f"{DIM}Commands: /quit  /history  /clear  /sessions  /switch  /new"
+        f"  /delete-all  /reset-permission{RESET}\n\n"
     )
 
     prompt = f"{ACCENT_USER}{BOLD}you \u276f{RESET} "
@@ -232,6 +254,9 @@ def _run_interactive(manager: SessionManager, session_id: str) -> None:
                     f"{ACCENT_SUCCESS}New session{RESET}"
                     f" {ACCENT_SYSTEM}{active_session_id}{RESET}\n\n"
                 )
+            continue
+        if stripped == "/reset-permission":
+            _handle_reset_permission(boundary, active_session_id)
             continue
 
         # Regular user input — send to model
@@ -327,6 +352,29 @@ def _handle_switch(
     return None
 
 
+def _handle_reset_permission(
+    boundary: CapabilityBoundary | None, session_id: str,
+) -> None:
+    """Reset only the current session's approval reuse state.
+
+    Scope: approval reuse memory only. Transcript, session records, and
+    progressive-exposure reveal state are all left untouched so operators can
+    retract a blanket 'approve similar' without losing unrelated session
+    history or exposure decisions.
+    """
+    if boundary is None or boundary.approval_gate is None:
+        _write(
+            f"  {DIM}(no approval gate configured — nothing to reset){RESET}\n\n"
+        )
+        return
+    boundary.approval_gate.reset_session(session_id)
+    _write(
+        f"  {ACCENT_SUCCESS}Reset approval memory for{RESET}"
+        f" {ACCENT_SYSTEM}{session_id}{RESET}"
+        f" {DIM}— similar write actions will prompt again.{RESET}\n\n"
+    )
+
+
 def _handle_delete_all(manager: SessionManager) -> bool:
     """Delete all sessions with explicit confirmation. Returns True if deletion was confirmed."""
     sessions = manager.list_sessions()
@@ -376,8 +424,6 @@ def _show_history(manager: SessionManager, session_id: str) -> None:
     for msg in messages:
         role = msg.role.value
         content = msg.content
-        if len(content) > 120:
-            content = content[:117] + "..."
 
         if role == "user":
             label_color = ACCENT_USER
@@ -392,10 +438,22 @@ def _show_history(manager: SessionManager, session_id: str) -> None:
             label_color = ACCENT_MUTED
             body_color = DIM
 
-        _write(
-            f"  {label_color}{BOLD}{role}{RESET}"
-            f" {body_color}{content}{RESET}\n"
-        )
+        if role == "assistant":
+            # Markdown-aware rendering for assistant messages only. Fenced
+            # code blocks + inline code + bold are recognised; other roles
+            # stay verbatim so user input and tool output aren't reformatted.
+            rendered = render_markdown_for_terminal(content)
+            _write(
+                f"  {label_color}{BOLD}{role}{RESET}"
+                f" {body_color}{rendered}{RESET}\n"
+            )
+        else:
+            if len(content) > 120:
+                content = content[:117] + "..."
+            _write(
+                f"  {label_color}{BOLD}{role}{RESET}"
+                f" {body_color}{content}{RESET}\n"
+            )
 
     _write(f"{divider(width)}\n\n")
 
@@ -465,7 +523,7 @@ def main() -> None:
         else:
             session = manager.create_session(system_prompt=args.system)
 
-        _run_interactive(manager, session.session_id)
+        _run_interactive(manager, session.session_id, boundary=boundary)
     finally:
         store.close()
 
