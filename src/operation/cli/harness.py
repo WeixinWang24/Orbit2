@@ -20,6 +20,11 @@ from src.capability.tools import (
 )
 from src.governance.approval import ApprovalGate, ApprovalMemory
 from src.governance.policies import RevealGroupSessionApprovalPolicy
+from src.governance.runtime_context_disclosure import (
+    BasicSelfLocationDisclosurePolicy,
+)
+from src.knowledge.assembly import StructuredContextAssembler
+from src.knowledge.runtime_context import RuntimeContextCollector
 from src.operation.cli.approval import CLIApprovalInteractor
 from src.operation.cli.composer import ComposerAction, PageDownAction, PageUpAction
 from src.operation.cli.markdown import render_markdown_for_terminal
@@ -533,7 +538,16 @@ def main() -> None:
     try:
         backend = _build_backend(args.backend)
         boundary = _build_capability_boundary(runtime_root.path)
-        manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
+        assembler = StructuredContextAssembler(
+            runtime_context_collector=RuntimeContextCollector(runtime_root, db_path),
+            runtime_context_disclosure_policy=BasicSelfLocationDisclosurePolicy(),
+        )
+        manager = SessionManager(
+            backend=backend,
+            store=store,
+            assembler=assembler,
+            capability_boundary=boundary,
+        )
 
         if args.list_sessions:
             sessions = manager.list_sessions()

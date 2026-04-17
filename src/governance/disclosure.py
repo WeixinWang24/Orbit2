@@ -32,10 +32,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
-from src.capability.registry import CapabilityRegistry
 from src.core.runtime.models import ConversationMessage, MessageRole
+
+if TYPE_CHECKING:
+    from src.capability.registry import CapabilityRegistry
 
 
 # Marker keys carried on TOOL-role message metadata. The session manager
