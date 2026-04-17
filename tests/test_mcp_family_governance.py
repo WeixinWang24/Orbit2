@@ -134,13 +134,97 @@ class TestGovernanceOverlay:
         g = resolve_mcp_tool_governance(server_name="Filesystem", original_tool_name="Read_File")
         assert g["side_effect_class"] == "safe"
 
-    def test_non_migrated_families_not_recognized(self) -> None:
-        """Handoff 16 bounds: bash/process/browser/pytest/ruff/mypy/obsidian
-        were intentionally NOT migrated. Their tools must stay conservative
-        until a future slice widens the overlay."""
-        for server in ["bash", "process", "browser", "pytest", "ruff", "mypy", "obsidian"]:
-            g = resolve_mcp_tool_governance(server_name=server, original_tool_name="x")
-            assert g == DEFAULT_MCP_GOVERNANCE, f"{server!r} must not be auto-classified yet"
+    def test_bash_family_not_recognized_yet(self) -> None:
+        """Handoff 17 bounds: bash remains the only MCP family not covered by
+        Orbit2's governance overlay. Future per-family slice will widen this."""
+        g = resolve_mcp_tool_governance(server_name="bash", original_tool_name="run_bash")
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestProcessFamilyGovernance:
+    @pytest.mark.parametrize(
+        "tool", ["start_process", "read_process_output", "wait_process", "terminate_process"]
+    )
+    def test_process_tools_are_write_approval_required(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(server_name="process", original_tool_name=tool)
+        assert g["side_effect_class"] == "write"
+        assert g["requires_approval"] is True
+        assert g["governance_policy_group"] == "permission_authority"
+
+    def test_unknown_process_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="process", original_tool_name="unknown_process_tool")
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestBrowserFamilyGovernance:
+    @pytest.mark.parametrize(
+        "tool",
+        ["browser_open", "browser_snapshot", "browser_console", "browser_screenshot"],
+    )
+    def test_browser_read_tools_are_safe(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(server_name="browser", original_tool_name=tool)
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+
+    @pytest.mark.parametrize("tool", ["browser_click", "browser_type"])
+    def test_browser_interaction_tools_are_write_approval(self, tool: str) -> None:
+        """Audit HIGH-2: click/type mutate remote state (submit forms, trigger
+        actions). They must be classified write/approval-required so the
+        future Governance-Surface gate catches them."""
+        g = resolve_mcp_tool_governance(server_name="browser", original_tool_name=tool)
+        assert g["side_effect_class"] == "write"
+        assert g["requires_approval"] is True
+        assert g["governance_policy_group"] == "permission_authority"
+
+    def test_unknown_browser_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="browser", original_tool_name="browser_unknown")
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestPytestFamilyGovernance:
+    def test_run_pytest_structured_is_safe(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="pytest", original_tool_name="run_pytest_structured")
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+
+    def test_unknown_pytest_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="pytest", original_tool_name="run_pytest_live")
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestRuffFamilyGovernance:
+    def test_run_ruff_structured_is_safe(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="ruff", original_tool_name="run_ruff_structured")
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+
+
+class TestMypyFamilyGovernance:
+    def test_run_mypy_structured_is_safe(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="mypy", original_tool_name="run_mypy_structured")
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+
+
+class TestObsidianFamilyGovernance:
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "obsidian_list_notes", "obsidian_read_note", "obsidian_search_notes",
+            "obsidian_get_note_links", "obsidian_get_vault_metadata",
+            "obsidian_check_availability",
+        ],
+    )
+    def test_obsidian_tools_are_safe(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(server_name="obsidian", original_tool_name=tool)
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+
+    def test_unknown_obsidian_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(server_name="obsidian", original_tool_name="obsidian_mutate_vault")
+        assert g == DEFAULT_MCP_GOVERNANCE
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +246,7 @@ class TestFilesystemAllowedRoot:
         root = tmp_path / "arg_root"
         root.mkdir()
         result = filesystem_server_allowed_root(
-            server_args=["python", "-m", "src.mcp_servers.filesystem.stdio_server", str(root)],
+            server_args=["python", "-m", "src.capability.mcp_servers.filesystem.stdio_server", str(root)],
             server_env={},
         )
         assert result == root.resolve()

@@ -51,24 +51,29 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     registry.register(ApplyExactHunkTool(workspace_root))
 
     shared_env = {"ORBIT_WORKSPACE_ROOT": str(workspace_root)}
-    attach_mcp_server(
-        McpClientBootstrap(
-            server_name="filesystem",
-            command=sys.executable,
-            args=("-m", "src.mcp_servers.filesystem.stdio_server", str(workspace_root)),
-            env=shared_env,
-        ),
-        registry,
-    )
-    attach_mcp_server(
-        McpClientBootstrap(
-            server_name="git",
-            command=sys.executable,
-            args=("-m", "src.mcp_servers.git.stdio_server", str(workspace_root)),
-            env=shared_env,
-        ),
-        registry,
-    )
+    # Every MCP family shipped with a server implementation in this repo is
+    # wired here so the default operator capability boundary reaches them
+    # without any per-session configuration. Governance-overlay-only families
+    # (process / browser / obsidian — their servers aren't shipped by Orbit2
+    # yet) are NOT attached by default: they rely on operator-supplied
+    # bootstraps and are classified by `resolve_mcp_tool_governance` if later
+    # attached explicitly.
+    for server_name, module_path in (
+        ("filesystem", "src.capability.mcp_servers.filesystem.stdio_server"),
+        ("git", "src.capability.mcp_servers.git.stdio_server"),
+        ("pytest", "src.capability.mcp_servers.pytest.stdio_server"),
+        ("ruff", "src.capability.mcp_servers.ruff.stdio_server"),
+        ("mypy", "src.capability.mcp_servers.mypy.stdio_server"),
+    ):
+        attach_mcp_server(
+            McpClientBootstrap(
+                server_name=server_name,
+                command=sys.executable,
+                args=("-m", module_path, str(workspace_root)),
+                env=shared_env,
+            ),
+            registry,
+        )
     return CapabilityBoundary(registry, workspace_root)
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 

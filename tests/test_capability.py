@@ -917,6 +917,11 @@ class TestCLICapabilityWiring:
     """Verify the CLI harness wires the capability boundary."""
 
     def test_build_capability_boundary(self, workspace: Path) -> None:
+        """Regression guard (Handoff 17 Vio acceptance revise): every MCP family
+        that ships with a server implementation must be attached by default so
+        operators reach it through Orbit2 capability closure without per-session
+        configuration. Families whose servers are NOT shipped by Orbit2
+        (process / browser / obsidian) are deliberately absent."""
         from src.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
@@ -937,7 +942,21 @@ class TestCLICapabilityWiring:
             "mcp__git__git_log",
             "mcp__git__git_add",
             "mcp__git__git_commit",
+            "mcp__pytest__run_pytest_structured",
+            "mcp__ruff__run_ruff_structured",
+            "mcp__mypy__run_mypy_structured",
         }
+
+    def test_default_boundary_attaches_every_shipped_family(self, workspace: Path) -> None:
+        """One-line sentinel: for each MCP family that ships a server module
+        under `src/capability/mcp_servers/`, at least one tool must be in the
+        default boundary. Catches 'shipped but not wired' regressions directly."""
+        from src.cli.harness import _build_capability_boundary
+        boundary = _build_capability_boundary(workspace)
+        names = {d.name for d in boundary.list_definitions()}
+        for family in ("filesystem", "git", "pytest", "ruff", "mypy"):
+            matching = [n for n in names if n.startswith(f"mcp__{family}__")]
+            assert matching, f"shipped MCP family {family!r} not attached to default boundary"
 
     def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:
         from src.cli.harness import _build_capability_boundary

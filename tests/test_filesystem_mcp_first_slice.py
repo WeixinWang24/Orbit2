@@ -19,11 +19,11 @@ from src.capability.mcp import (
     attach_mcp_server,
 )
 from src.capability.registry import CapabilityRegistry
-from src.mcp_servers.filesystem import stdio_server as fs_server
+from src.capability.mcp_servers.filesystem import stdio_server as fs_server
 from src.runtime.models import ToolRequest
 
 
-_FS_MODULE = "src.mcp_servers.filesystem.stdio_server"
+_FS_MODULE = "src.capability.mcp_servers.filesystem.stdio_server"
 
 
 # ---------------------------------------------------------------------------

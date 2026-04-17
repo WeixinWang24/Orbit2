@@ -21,11 +21,11 @@ from src.capability.mcp import (
     attach_mcp_server,
 )
 from src.capability.registry import CapabilityRegistry
-from src.mcp_servers.git import stdio_server as git_server
+from src.capability.mcp_servers.git import stdio_server as git_server
 from src.runtime.models import ToolRequest
 
 
-_GIT_MODULE = "src.mcp_servers.git.stdio_server"
+_GIT_MODULE = "src.capability.mcp_servers.git.stdio_server"
 
 
 def _run_git(args: list[str], *, cwd: Path) -> None:
