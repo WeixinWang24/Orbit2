@@ -214,6 +214,102 @@ def test_nonstreaming_fallback_shows_final_text(nonstreaming_manager: SessionMan
     assert "reply: test" in plain
 
 
+def test_nonstreaming_fallback_applies_markdown_render(tmp_path: Path, capsys) -> None:
+    """Non-streaming path should route `plan.final_text` through the renderer.
+
+    Handoff 25 widens the renderer to headings/bullets/italics; ensure the
+    fallback path actually uses it instead of printing raw markdown.
+    """
+
+    class MarkdownNonStreamingBackend(ExecutionBackend):
+        @property
+        def backend_name(self) -> str:
+            return "md-nonstream-dummy"
+
+        def plan_from_messages(
+            self,
+            request: TurnRequest,
+            *,
+            on_partial_text: Callable[[str], None] | None = None,
+        ) -> ExecutionPlan:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="md-nonstream-dummy-final",
+                final_text="### heading\n- **bold** body",
+                model="dummy-model",
+            )
+
+    store = SQLiteSessionStore(tmp_path / "test.db")
+    mgr = SessionManager(backend=MarkdownNonStreamingBackend(), store=store)
+    session = mgr.create_session()
+    inputs = iter(["hi", "/quit"])
+    with patch("builtins.input", side_effect=inputs):
+        _run_interactive(mgr, session.session_id)
+
+    plain = _strip_ansi(capsys.readouterr().out)
+    # Raw markers gone; content preserved; bullet glyph present.
+    assert "### heading" not in plain
+    assert "- **bold** body" not in plain
+    assert "heading" in plain
+    assert "bold" in plain
+    assert "\u2022 bold body" in plain
+
+
+def test_tty_streaming_path_rewrites_with_markdown(tmp_path: Path, capsys) -> None:
+    """When stdout is a TTY, the streaming path restores the saved cursor
+    and re-emits the final text through the markdown renderer.
+
+    The raw-markdown bytes still appear in captured stdout (they were
+    streamed), but after the `\\x1b8\\x1b[J` restore+clear sequence the
+    rendered form must be what a terminal would actually display.
+    """
+
+    class MarkdownStreamingBackend(ExecutionBackend):
+        @property
+        def backend_name(self) -> str:
+            return "md-stream-dummy"
+
+        def plan_from_messages(
+            self,
+            request: TurnRequest,
+            *,
+            on_partial_text: Callable[[str], None] | None = None,
+        ) -> ExecutionPlan:
+            text = "### heading\n- **bold** body"
+            if on_partial_text:
+                for i in range(1, len(text) + 1):
+                    on_partial_text(text[:i])
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="md-stream-dummy-final",
+                final_text=text,
+                model="dummy-model",
+            )
+
+    store = SQLiteSessionStore(tmp_path / "test.db")
+    mgr = SessionManager(backend=MarkdownStreamingBackend(), store=store)
+    session = mgr.create_session()
+
+    import sys as _sys
+
+    inputs = iter(["hi", "/quit"])
+    with patch("builtins.input", side_effect=inputs), patch.object(
+        _sys.stdout, "isatty", return_value=True,
+    ):
+        _run_interactive(mgr, session.session_id)
+
+    out = capsys.readouterr().out
+    assert "\x1b7" in out  # DEC save cursor before streaming
+    assert "\x1b8\x1b[J" in out  # restore + clear after streaming
+    # After the restore sequence the renderer output must land.
+    after_restore = out.split("\x1b8\x1b[J", 1)[1]
+    plain_after = _strip_ansi(after_restore)
+    assert "### heading" not in plain_after
+    assert "- **bold** body" not in plain_after
+    assert "heading" in plain_after
+    assert "\u2022 bold body" in plain_after
+
+
 # ---------------------------------------------------------------------------
 # 8. Main entrypoint delegation
 # ---------------------------------------------------------------------------

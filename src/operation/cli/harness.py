@@ -263,6 +263,12 @@ def _run_interactive(
         _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET} ")
 
         last_len = 0
+        stream_anchor_saved = False
+        if sys.stdout.isatty():
+            # DEC save-cursor. Streaming deltas print raw for liveness; after
+            # the turn closes we jump back and rewrite with markdown applied.
+            _write("\x1b7")
+            stream_anchor_saved = True
 
         def on_partial(accumulated: str) -> None:
             nonlocal last_len
@@ -272,9 +278,14 @@ def _run_interactive(
 
         plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
-        if last_len == 0 and plan.final_text:
-            _write(f"{CONTENT_ASSISTANT}{plan.final_text}{RESET}")
-        if plan.final_text is None and last_len == 0:
+        if plan.final_text:
+            rendered = render_markdown_for_terminal(plan.final_text)
+            if last_len > 0 and stream_anchor_saved:
+                _write(f"\x1b8\x1b[J{CONTENT_ASSISTANT}{rendered}{RESET}")
+            elif last_len == 0:
+                _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
+            # else: streamed raw on a non-TTY sink — leave as-is.
+        elif last_len == 0:
             _write(f"{ACCENT_ERROR}[no response]{RESET}")
 
         if plan.tool_requests:
