@@ -34,10 +34,9 @@ from src.cli.style import (
 from src.providers.base import ExecutionBackend
 from src.providers.codex import CodexBackend, CodexConfig
 from src.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
+from src.runtime.paths import REPO_ROOT, default_db_path, resolve_runtime_root
 from src.runtime.session import SessionManager
 from src.store.sqlite import SQLiteSessionStore
-
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
@@ -389,13 +388,26 @@ def main() -> None:
         action="store_true",
         help="List existing sessions and exit",
     )
+    parser.add_argument(
+        "--runtime-root",
+        default=None,
+        help=(
+            "Effective runtime/workspace/store root. Overrides ORBIT2_RUNTIME_ROOT. "
+            "Defaults to the Orbit2 repo checkout. Process cwd is never consulted."
+        ),
+    )
     args = parser.parse_args()
 
-    db_path = REPO_ROOT / ".runtime" / "sessions.db"
+    runtime_root = resolve_runtime_root(args.runtime_root)
+    db_path = default_db_path(runtime_root)
+    _write(
+        f"{DIM}runtime_root={runtime_root.path} "
+        f"(source={runtime_root.source})  store={db_path}{RESET}\n"
+    )
     store = SQLiteSessionStore(db_path)
     try:
         backend = _build_backend(args.backend)
-        boundary = _build_capability_boundary(REPO_ROOT)
+        boundary = _build_capability_boundary(runtime_root.path)
         manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
 
         if args.list_sessions:

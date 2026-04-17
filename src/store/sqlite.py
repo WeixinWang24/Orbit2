@@ -8,13 +8,11 @@ from pathlib import Path
 from src.runtime.models import ConversationMessage, MessageRole, Session, SessionStatus
 from src.store.base import SessionStore
 
-DEFAULT_DB_NAME = "orbit2_sessions.db"
-
 
 class SQLiteSessionStore(SessionStore):
-    def __init__(self, db_path: str | Path | None = None) -> None:
-        if db_path is None:
-            db_path = DEFAULT_DB_NAME
+    def __init__(self, db_path: str | Path) -> None:
+        # db_path is required so the store never silently lands in a cwd-relative
+        # default; runtime.paths.default_db_path is the canonical source.
         self._db_path = str(db_path)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.row_factory = sqlite3.Row
