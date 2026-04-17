@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from src.capability.boundary import CapabilityBoundary
+from src.capability.discovery import ListAvailableToolsTool
 from src.capability.mcp.attach import attach_mcp_server
 from src.capability.mcp.models import McpClientBootstrap
 from src.capability.registry import CapabilityRegistry
@@ -74,6 +75,13 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
             ),
             registry,
         )
+
+    # Progressive-exposure discovery tool (Handoff 19). Registered AFTER all
+    # native + MCP attachments so its view of the registry matches what the
+    # discovery summary will report. Default-exposed + self-lives in the
+    # `discovery` reveal group via the tool class itself.
+    registry.register(ListAvailableToolsTool(registry))
+
     return CapabilityBoundary(registry, workspace_root)
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 

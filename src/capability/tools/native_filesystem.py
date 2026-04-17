@@ -19,6 +19,19 @@ class _WorkspaceScopedTool(Tool):
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root.resolve()
 
+    @property
+    def reveal_group(self) -> str:
+        # Native filesystem family split by side-effect: read-side stays in
+        # `native_fs_read` (default-exposed); write-side rolls into
+        # `native_fs_mutate` so writes are hidden until explicitly revealed.
+        return "native_fs_mutate" if self.side_effect_class == "write" else "native_fs_read"
+
+    @property
+    def default_exposed(self) -> bool:
+        # Read-side tools are part of the default minimum. Write-side stays
+        # hidden until the operator/model requests the mutate reveal group.
+        return self.side_effect_class != "write"
+
     def _resolve(self, path: str) -> Path | ToolResult:
         target = (self._workspace_root / path).resolve()
         try:

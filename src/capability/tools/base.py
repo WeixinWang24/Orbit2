@@ -37,5 +37,26 @@ class Tool(ABC):
         """
         return None
 
+    @property
+    def reveal_group(self) -> str:
+        """Name of the progressive-exposure reveal group this tool belongs
+        to. Used by the Knowledge Surface assembler to compute which tools
+        are visible to the provider on a given turn. The default `"default"`
+        group is always exposed when the tool also sets `default_exposed`.
+        """
+        return "default"
+
+    @property
+    def default_exposed(self) -> bool:
+        """Whether the tool is visible to the provider without an explicit
+        reveal request. When `False`, the tool is only exposed after the
+        model requests its `reveal_group` through the discovery tool.
+
+        Default `True` preserves backward compatibility with tools that
+        predate progressive exposure (Handoff 19). Explicit opt-in to
+        staged exposure means setting this to `False`.
+        """
+        return True
+
     @abstractmethod
     def execute(self, **kwargs: Any) -> ToolResult: ...

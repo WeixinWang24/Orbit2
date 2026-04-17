@@ -1,4 +1,11 @@
 from src.capability.boundary import CapabilityBoundary
+from src.capability.discovery import (
+    DISCOVERY_REVEAL_GROUP,
+    DISCOVERY_TOOL_NAME,
+    GROUP_DESCRIPTIONS,
+    REVEAL_REQUEST_MARKER,
+    ListAvailableToolsTool,
+)
 from src.capability.mcp import (
     McpClientBootstrap,
     McpToolDescriptor,
@@ -32,6 +39,11 @@ __all__ = [
     "ApplyExactHunkTool",
     "CapabilityRegistry",
     "CapabilityBoundary",
+    "ListAvailableToolsTool",
+    "DISCOVERY_TOOL_NAME",
+    "DISCOVERY_REVEAL_GROUP",
+    "REVEAL_REQUEST_MARKER",
+    "GROUP_DESCRIPTIONS",
     "McpClientBootstrap",
     "McpToolDescriptor",
     "McpToolWrapper",

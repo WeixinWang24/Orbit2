@@ -945,6 +945,7 @@ class TestCLICapabilityWiring:
             "mcp__pytest__run_pytest_structured",
             "mcp__ruff__run_ruff_structured",
             "mcp__mypy__run_mypy_structured",
+            "list_available_tools",
         }
 
     def test_default_boundary_attaches_every_shipped_family(self, workspace: Path) -> None:

@@ -62,9 +62,53 @@ class McpToolWrapper(Tool):
         else:
             self._governance_path_arg_keys = None
 
+        # All MCP wrappers start hidden; the harness explicitly flips
+        # select families on when it decides the default-exposed minimum.
+        self._default_exposed = False
+
+    # Handoff 19 reveal-group family map. Single source of truth: used by
+    # the `reveal_group` property below. Adding a new family server here
+    # means both read-side and write-side paths update atomically — there
+    # is no independent fallback in __init__ that could disagree.
+    _MCP_FAMILY_READ_GROUPS: dict[str, str] = {
+        "filesystem": "mcp_fs_read",
+        "git": "mcp_git_read",
+    }
+    _MCP_FAMILY_WRITE_GROUPS: dict[str, str] = {
+        "filesystem": "mcp_fs_mutate",
+        "git": "mcp_git_mutate",
+        "process": "mcp_process",
+    }
+    _MCP_DIAGNOSTICS_SERVERS: frozenset[str] = frozenset({"pytest", "ruff", "mypy"})
+
     @property
     def governance_path_arg_keys(self) -> tuple[str, ...] | None:
         return self._governance_path_arg_keys
+
+    @property
+    def reveal_group(self) -> str:
+        server = self._descriptor.server_name.strip().lower()
+        is_write = self._governance["side_effect_class"] == "write"
+        if server in self._MCP_DIAGNOSTICS_SERVERS:
+            return "mcp_diagnostics"
+        if is_write:
+            write_group = self._MCP_FAMILY_WRITE_GROUPS.get(server)
+            if write_group is not None:
+                return write_group
+        read_group = self._MCP_FAMILY_READ_GROUPS.get(server)
+        if read_group is not None:
+            return read_group
+        return f"mcp_{server}"
+
+    @property
+    def default_exposed(self) -> bool:
+        return self._default_exposed
+
+    def set_default_exposed(self, exposed: bool) -> None:
+        """Operator-surface hook for declaring whether this wrapper is part
+        of the default-exposed minimum. Called by the harness after attach
+        so the decision lives with the CLI policy layer, not the wrapper."""
+        self._default_exposed = bool(exposed)
 
     @property
     def descriptor(self) -> McpToolDescriptor:
