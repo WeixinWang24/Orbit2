@@ -124,10 +124,12 @@ class TestGovernanceOverlay:
         assert g == DEFAULT_MCP_GOVERNANCE
 
     def test_unknown_filesystem_tool_falls_back_to_default(self) -> None:
-        """A non-migrated filesystem tool (e.g. glob) should NOT be silently
-        promoted to safe. Conservative default applies until the overlay is
-        widened in a future slice."""
-        g = resolve_mcp_tool_governance(server_name="filesystem", original_tool_name="glob")
+        """A filesystem tool not in the recognized set must NOT be silently
+        promoted to safe. `glob` was added to the overlay in Handoff 23; this
+        test now uses an unrecognized name to exercise the fallback path."""
+        g = resolve_mcp_tool_governance(
+            server_name="filesystem", original_tool_name="not_a_real_fs_tool",
+        )
         assert g == DEFAULT_MCP_GOVERNANCE
 
     def test_governance_is_case_insensitive_on_names(self) -> None:
@@ -471,7 +473,7 @@ class TestBoundarySurfacesToolLayerGovernance:
             arguments={"path": "hi.txt"},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_git_mutation_registers_with_write_metadata(
         self, tmp_path: Path

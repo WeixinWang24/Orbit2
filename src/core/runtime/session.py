@@ -4,6 +4,15 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from src.capability.discovery import DISCOVERY_TOOL_NAME
+from src.governance.disclosure import (
+    DEFAULT_DISCLOSURE_STRATEGY,
+    DISCLOSURE_MARKER_KEYS,
+    REVEAL_ALL_SAFE_REQUEST_MARKER,
+    REVEAL_BATCH_REQUEST_MARKER,
+    REVEAL_REQUEST_MARKER,
+    DisclosureStrategy,
+    ExposureDecision,
+)
 from src.knowledge.assembly import (
     AssemblyDebugEnvelope,
     ContextAssembler,
@@ -11,7 +20,6 @@ from src.knowledge.assembly import (
     build_envelope,
 )
 from src.knowledge.exposure import (
-    ExposureDecision,
     compute_exposed_tools,
     filter_definitions_by_exposure,
 )
@@ -40,11 +48,18 @@ class SessionManager:
         store: SessionStore,
         assembler: ContextAssembler | None = None,
         capability_boundary: object | None = None,
+        disclosure_strategy: DisclosureStrategy | None = None,
     ) -> None:
         self._backend = backend
         self._store = store
         self._assembler = assembler or StructuredContextAssembler()
         self._capability_boundary = capability_boundary
+        # Progressive-disclosure policy. Default preserves Handoff-19
+        # single-reveal behavior. Operators who want overview ergonomics
+        # pass `BatchRevealDisclosureStrategy()`; future modes can be
+        # added as new DisclosureStrategy subclasses without touching
+        # this constructor.
+        self._disclosure_strategy = disclosure_strategy or DEFAULT_DISCLOSURE_STRATEGY
         # Initialised once at construction. `_plan_with_tools` only overwrites
         # it on a successful exposure computation, so a later call that
         # raises before reaching the boundary branch leaves the previous
@@ -173,9 +188,25 @@ class SessionManager:
                     isinstance(result.data, dict)
                     and result.tool_name == DISCOVERY_TOOL_NAME
                 ):
-                    reveal_request = result.data.get("reveal_request")
-                    if isinstance(reveal_request, str) and reveal_request:
-                        tool_metadata["reveal_request"] = reveal_request
+                    # Preserve every known disclosure marker the discovery
+                    # tool may have set: single-group reveal (Handoff 19),
+                    # batch list (Handoff 23), or the one-shot all-safe
+                    # flag. Promotion stays restricted to the discovery
+                    # tool so a non-discovery result still cannot forge
+                    # cross-turn exposure.
+                    for marker_key in DISCLOSURE_MARKER_KEYS:
+                        value = result.data.get(marker_key)
+                        if marker_key == REVEAL_REQUEST_MARKER:
+                            if isinstance(value, str) and value:
+                                tool_metadata[marker_key] = value
+                        elif marker_key == REVEAL_BATCH_REQUEST_MARKER:
+                            if isinstance(value, list) and all(
+                                isinstance(v, str) and v for v in value
+                            ):
+                                tool_metadata[marker_key] = list(value)
+                        elif marker_key == REVEAL_ALL_SAFE_REQUEST_MARKER:
+                            if value is True:
+                                tool_metadata[marker_key] = True
                 self._store.save_message(ConversationMessage(
                     message_id=make_message_id(),
                     session_id=session_id,
@@ -282,7 +313,8 @@ class SessionManager:
             # routes through the full boundary; exposure only constrains
             # which tools the provider sees this turn.
             decision = compute_exposed_tools(
-                self._capability_boundary.registry, all_messages
+                self._capability_boundary.registry, all_messages,
+                strategy=self._disclosure_strategy,
             )
             self._last_exposure_decision = decision
             request.tool_definitions = filter_definitions_by_exposure(

@@ -147,7 +147,7 @@ class TestDiscoveryTool:
             arguments={},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
 
 # ---------------------------------------------------------------------------

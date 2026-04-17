@@ -48,6 +48,14 @@ FILESYSTEM_READ_TOOLS: frozenset[str] = frozenset({
     "read_file",
     "list_directory",
     "get_file_info",
+    # Handoff 23 widening — all safe / no-approval, all workspace-scoped
+    # through the same `_resolve_safe_path` path discipline.
+    "glob",
+    "search_files",
+    "grep",
+    "directory_tree",
+    "read_multiple_files",
+    "list_directory_with_sizes",
 })
 
 FILESYSTEM_WRITE_TOOLS: frozenset[str] = frozenset({
@@ -61,6 +69,12 @@ _FILESYSTEM_PATH_EXISTS_TOOLS: frozenset[str] = frozenset({
     "list_directory",
     "get_file_info",
     "replace_in_file",
+    # Handoff 23 widening read tools that operate under an existing path.
+    "list_directory_with_sizes",
+    "directory_tree",
+    "search_files",
+    "glob",
+    "grep",
 })
 
 

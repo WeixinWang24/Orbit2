@@ -24,14 +24,14 @@ from typing import Any, Callable
 from src.capability.models import ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools.base import Tool
+from src.governance.disclosure import (
+    REVEAL_ALL_SAFE_REQUEST_MARKER,
+    REVEAL_BATCH_REQUEST_MARKER,
+    REVEAL_REQUEST_MARKER,
+)
 
 DISCOVERY_TOOL_NAME = "list_available_tools"
 DISCOVERY_REVEAL_GROUP = "discovery"
-
-# Marker key surfaced on `ToolResult.data`. The Knowledge Surface assembler
-# scans recent transcript TOOL messages for this field to compute which
-# reveal groups are currently unlocked for the next turn.
-REVEAL_REQUEST_MARKER = "reveal_request"
 
 
 # Short human-readable descriptions for shipped reveal groups. The
@@ -96,8 +96,13 @@ class ListAvailableToolsTool(Tool):
             description=(
                 "List the tools currently visible to you and the hidden "
                 "reveal groups you can unlock. Pass `reveal=<group_name>` "
-                "to request that the named group be made visible on the "
-                "next turn."
+                "to unlock one group, `reveal_batch=[<group>, ...]` to "
+                "request several at once, or `reveal_all_safe=true` for a "
+                "one-shot overview that unlocks every no-approval group. "
+                "Requests take effect on the NEXT turn. Batch modes require "
+                "an active batch-reveal disclosure strategy — if your "
+                "session is running single-reveal they will be recorded "
+                "but ignored."
             ),
             parameters={
                 "type": "object",
@@ -105,10 +110,27 @@ class ListAvailableToolsTool(Tool):
                     "reveal": {
                         "type": "string",
                         "description": (
-                            "Optional. Name of a reveal group to request "
-                            "for the next turn. The group's tools become "
-                            "visible on the next provider turn only; this "
-                            "call itself only records the request."
+                            "Optional. Name of a single reveal group to "
+                            "request for the next turn."
+                        ),
+                    },
+                    "reveal_batch": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional. List of reveal group names to unlock "
+                            "on the next turn in one shot. Only honored when "
+                            "the session's disclosure strategy is "
+                            "`batch_reveal`."
+                        ),
+                    },
+                    "reveal_all_safe": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional. When true, unlock every reveal group "
+                            "whose tools are ALL safe / no-approval. Never "
+                            "unlocks mutation-bearing groups. Only honored "
+                            "under `batch_reveal`."
                         ),
                     },
                 },
@@ -140,45 +162,94 @@ class ListAvailableToolsTool(Tool):
         # Discovery takes no path-bearing arguments.
         return ()
 
-    def execute(self, *, reveal: str | None = None) -> ToolResult:
+    def execute(
+        self,
+        *,
+        reveal: str | None = None,
+        reveal_batch: list[str] | None = None,
+        reveal_all_safe: bool | None = None,
+    ) -> ToolResult:
         payload = self._build_summary()
         data: dict[str, Any] = {"summary": payload}
+
+        all_registry_groups = {
+            self._registry.get(n).reveal_group
+            for n in self._registry.list_names()
+            if self._registry.get(n) is not None
+        }
+        active = set(payload.get("active_reveal_groups") or [])
+
+        # Single reveal (back-compat with Handoff 19).
         if isinstance(reveal, str) and reveal.strip():
-            requested = reveal.strip()
-            # All reveal groups the registry actually exposes — both the
-            # hidden ones surfaced in the summary and the currently-active
-            # ones (which wouldn't appear in `reveal_groups` because
-            # they're no longer hidden). Reveals that request an already-
-            # active group are a no-op; reveals that request the discovery
-            # group itself are explicitly rejected because the discovery
-            # tool is always exposed and has no meaningful "reveal".
-            all_registry_groups = {
-                self._registry.get(n).reveal_group
-                for n in self._registry.list_names()
-                if self._registry.get(n) is not None
-            }
-            if requested == DISCOVERY_REVEAL_GROUP:
-                data["reveal_error"] = (
-                    "the 'discovery' group is always active; "
-                    "no reveal needed"
+            self._handle_single_reveal(
+                reveal.strip(), all_registry_groups, active, data
+            )
+
+        # Batch reveal — a list of group names.
+        if isinstance(reveal_batch, list) and reveal_batch:
+            cleaned: list[str] = []
+            rejected: list[str] = []
+            noops: list[str] = []
+            for g in reveal_batch:
+                if not isinstance(g, str) or not g.strip():
+                    continue
+                name = g.strip()
+                if name == DISCOVERY_REVEAL_GROUP:
+                    rejected.append(name)
+                    continue
+                if name not in all_registry_groups:
+                    rejected.append(name)
+                    continue
+                if name in active:
+                    noops.append(name)
+                    continue
+                cleaned.append(name)
+            if cleaned:
+                data[REVEAL_BATCH_REQUEST_MARKER] = cleaned
+                data["reveal_batch_confirmation"] = (
+                    f"groups {sorted(cleaned)!r} will be exposed on the next turn"
                 )
-            elif requested not in all_registry_groups:
-                # Invalid group — still return discovery output but include
-                # an explicit error marker instead of a reveal_request so
-                # the assembler does not widen exposure to a nonexistent
-                # group.
-                data["reveal_error"] = f"unknown reveal group: {requested!r}"
-            elif requested in (payload.get("active_reveal_groups") or []):
-                data["reveal_noop"] = (
-                    f"reveal group {requested!r} is already active"
-                )
-            else:
-                data[REVEAL_REQUEST_MARKER] = requested
-                data["reveal_request_confirmation"] = (
-                    f"reveal group {requested!r} will be exposed on the next turn"
-                )
+            if rejected:
+                data["reveal_batch_rejected"] = sorted(rejected)
+            if noops:
+                data["reveal_batch_noop"] = sorted(noops)
+
+        # All-safe reveal — boolean trigger.
+        if reveal_all_safe is True:
+            data[REVEAL_ALL_SAFE_REQUEST_MARKER] = True
+            data["reveal_all_safe_confirmation"] = (
+                "every reveal group whose tools are all safe / "
+                "no-approval will be exposed on the next turn"
+            )
+
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
         return ToolResult(ok=True, content=rendered, data=data)
+
+    def _handle_single_reveal(
+        self,
+        requested: str,
+        all_registry_groups: set[str],
+        active: set[str],
+        data: dict[str, Any],
+    ) -> None:
+        if requested == DISCOVERY_REVEAL_GROUP:
+            data["reveal_error"] = (
+                "the 'discovery' group is always active; "
+                "no reveal needed"
+            )
+            return
+        if requested not in all_registry_groups:
+            data["reveal_error"] = f"unknown reveal group: {requested!r}"
+            return
+        if requested in active:
+            data["reveal_noop"] = (
+                f"reveal group {requested!r} is already active"
+            )
+            return
+        data[REVEAL_REQUEST_MARKER] = requested
+        data["reveal_request_confirmation"] = (
+            f"reveal group {requested!r} will be exposed on the next turn"
+        )
 
     def _build_summary(self) -> dict[str, Any]:
         # Active reveal groups for THIS turn. When the provider callback

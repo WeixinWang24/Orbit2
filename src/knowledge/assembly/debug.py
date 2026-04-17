@@ -82,6 +82,9 @@ class AssemblyDebugEnvelope:
     exposed_tool_groups: list[str] | None = None
     exposed_tool_names: list[str] | None = None
     rejected_reveal_requests: list[str] | None = None
+    # Handoff 23: which DisclosureStrategy produced this exposure decision.
+    # `None` when no capability boundary was configured for the turn.
+    disclosure_strategy_name: str | None = None
     assembler_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_metadata_dict(self) -> dict[str, Any]:
@@ -135,10 +138,12 @@ def build_envelope(
     exposed_groups: list[str] | None = None
     exposed_names: list[str] | None = None
     rejected: list[str] | None = None
+    strategy_name: str | None = None
     if exposure_decision is not None:
         exposed_groups = list(exposure_decision.active_reveal_groups)
         exposed_names = sorted(exposure_decision.exposed_tool_names)
         rejected = list(exposure_decision.rejected_reveal_requests)
+        strategy_name = exposure_decision.strategy_name or None
 
     return AssemblyDebugEnvelope(
         assembler_name=assembler_name,
@@ -151,5 +156,6 @@ def build_envelope(
         exposed_tool_groups=exposed_groups,
         exposed_tool_names=exposed_names,
         rejected_reveal_requests=rejected,
+        disclosure_strategy_name=strategy_name,
         assembler_metadata=assembler_metadata,
     )

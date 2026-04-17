@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from src.core.store.sqlite import SQLiteSessionStore
 
-_VALID_MAIN_TABS = {"transcript", "debug", "assembly"}
+_VALID_MAIN_TABS = {"transcript", "debug", "assembly", "exposure"}
 _VALID_RIGHT_TABS = {"metadata", "raw"}
 
 # ---------------------------------------------------------------------------
@@ -598,6 +598,104 @@ def _render_assembly_panel(messages: list) -> str:
     return "".join(parts)
 
 
+def _render_exposure_panel(messages: list) -> str:
+    """Progressive-exposure / capability-debug projection (Handoff 23).
+
+    Distinct from the Assembly panel: this view zooms in on exposure state
+    alone — which disclosure strategy is active, which reveal groups are
+    on, which tools are visible this turn, and any reveal requests the
+    runtime rejected. Data comes from the same `assembly_envelope`
+    metadata the runtime already persists on assistant messages; the
+    inspector does not recompute exposure decisions.
+    """
+    parts = []
+    parts.append('<div class="section-card green">')
+    parts.append("<h3>Exposure / Capability Debug \u00b7 projection only</h3>")
+    parts.append(
+        '<div class="meta">Reads progressive-exposure state from each turn\'s '
+        "persisted assembly envelope. For a turn where the runtime did not "
+        "compute exposure (no capability boundary configured) or the session "
+        "predates Handoff 19, this tab shows nothing for that turn.</div>"
+    )
+    parts.append("</div>")
+
+    envelopes = _extract_assembly_envelopes(messages)
+    if not envelopes:
+        parts.append(
+            '<div class="empty">No exposure envelopes persisted for this '
+            "session yet. Run a turn to populate one.</div>"
+        )
+        return "".join(parts)
+
+    # Most recent envelope first so operators see the current state on top.
+    for turn_index, env in reversed(envelopes):
+        parts.append('<div class="fragment-card">')
+        strategy = env.get("disclosure_strategy_name") or "(pre-Handoff-23)"
+        parts.append(
+            f'<div class="fragment-title">Turn {escape(str(turn_index))}'
+            f' \u00b7 strategy <span class="message-chip">{escape(strategy)}</span>'
+            "</div>"
+        )
+
+        parts.append('<div class="stat-row">')
+        # Defensive list-type guards (audit MED-1). A malformed envelope
+        # whose exposure fields are non-list values must not produce
+        # garbled HTML; treat any non-list as empty.
+        raw_names = env.get("exposed_tool_names")
+        raw_groups = env.get("exposed_tool_groups")
+        raw_rejected = env.get("rejected_reveal_requests")
+        names = raw_names if isinstance(raw_names, list) else []
+        groups = raw_groups if isinstance(raw_groups, list) else []
+        rejected = raw_rejected if isinstance(raw_rejected, list) else []
+        parts.append(_render_stat_card(str(len(names)), "visible tools"))
+        parts.append(_render_stat_card(str(len(groups)), "active groups"))
+        parts.append(_render_stat_card(str(len(rejected)), "rejected reveals"))
+        parts.append("</div>")
+
+        if groups:
+            parts.append('<div class="section-card cyan">')
+            parts.append("<h3>Active reveal groups</h3>")
+            parts.append(
+                '<div class="message-meta-row">'
+                + "".join(
+                    f'<span class="message-chip">{escape(str(g))}</span>'
+                    for g in groups
+                )
+                + "</div>"
+            )
+            parts.append("</div>")
+
+        if names:
+            parts.append('<div class="section-card blue">')
+            parts.append("<h3>Visible tools</h3>")
+            parts.append(
+                '<div class="message-meta-row">'
+                + "".join(
+                    f'<span class="message-chip">{escape(str(n))}</span>'
+                    for n in names
+                )
+                + "</div>"
+            )
+            parts.append("</div>")
+
+        if rejected:
+            parts.append('<div class="section-card">')
+            parts.append("<h3>Rejected reveal requests</h3>")
+            parts.append(
+                '<div class="message-meta-row">'
+                + "".join(
+                    f'<span class="message-chip fail">{escape(str(r))}</span>'
+                    for r in rejected
+                )
+                + "</div>"
+            )
+            parts.append("</div>")
+
+        parts.append("</div>")
+
+    return "".join(parts)
+
+
 def _render_metadata_right_panel(session, messages: list) -> str:
     """Right panel: session identity + message stats."""
     parts = []
@@ -722,6 +820,7 @@ def _html_page(
         main_tabs = [
             ("transcript", "Transcript"),
             ("assembly", "Assembly"),
+            ("exposure", "Exposure"),
             ("debug", "Debug"),
         ]
         parts.append('<div class="tabbar">')
@@ -737,6 +836,8 @@ def _html_page(
             parts.append(_render_debug_panel(current_session, messages))
         elif active_tab == "assembly":
             parts.append(_render_assembly_panel(messages))
+        elif active_tab == "exposure":
+            parts.append(_render_exposure_panel(messages))
         else:
             parts.append(_render_transcript_panel(messages))
         parts.append("</div>")
