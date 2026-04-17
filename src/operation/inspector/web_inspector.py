@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from src.core.store.sqlite import SQLiteSessionStore
 
-_VALID_MAIN_TABS = {"transcript", "debug"}
+_VALID_MAIN_TABS = {"transcript", "debug", "assembly"}
 _VALID_RIGHT_TABS = {"metadata", "raw"}
 
 # ---------------------------------------------------------------------------
@@ -393,6 +393,211 @@ def _render_debug_panel(session, messages: list) -> str:
     return "".join(parts)
 
 
+def _extract_assembly_envelopes(messages: list) -> list[tuple]:
+    """Walk the transcript and pull (turn_index, envelope_dict) pairs from
+    every assistant message that has an `assembly_envelope` attached.
+
+    The inspector is a projection — it never reconstructs envelopes from
+    transcript state. If the runtime did not persist one on a given turn,
+    the inspector simply does not render one for that turn. Order is
+    transcript order (ascending turn_index), so operators see how the
+    assembled payload evolved across a multi-tool-loop turn.
+    """
+    rows: list[tuple] = []
+    for msg in messages:
+        role = msg.role.value if hasattr(msg.role, "value") else str(msg.role)
+        if role.lower() != "assistant":
+            continue
+        meta = msg.metadata or {}
+        envelope = meta.get("assembly_envelope")
+        if not isinstance(envelope, dict):
+            continue
+        rows.append((msg.turn_index, envelope))
+    return rows
+
+
+def _render_envelope_card(turn_index: int, envelope: dict) -> str:
+    parts = ['<div class="fragment-card">']
+    parts.append(
+        f'<div class="fragment-title">Turn {escape(str(turn_index))}'
+        f' \u00b7 {escape(str(envelope.get("assembler_name", "unknown")))}'
+        "</div>"
+    )
+
+    # Top-line stats
+    parts.append('<div class="stat-row">')
+    parts.append(
+        _render_stat_card(
+            str(envelope.get("transcript_message_count", 0)),
+            "transcript msgs",
+        )
+    )
+    parts.append(
+        _render_stat_card(
+            str(envelope.get("assembled_message_count", 0)),
+            "assembled msgs",
+        )
+    )
+    parts.append(
+        _render_stat_card(
+            str(len(envelope.get("instruction_fragments") or [])),
+            "fragments",
+        )
+    )
+    exposed_names = envelope.get("exposed_tool_names")
+    if exposed_names is not None:
+        parts.append(
+            _render_stat_card(str(len(exposed_names)), "exposed tools")
+        )
+    parts.append("</div>")
+
+    # Assembled system preview
+    system_preview = envelope.get("assembled_system_preview")
+    if system_preview:
+        parts.append('<div class="section-card violet">')
+        parts.append("<h3>Assembled System</h3>")
+        parts.append(f"<pre>{escape(str(system_preview))}</pre>")
+        parts.append("</div>")
+
+    # Instruction fragments
+    fragments = envelope.get("instruction_fragments") or []
+    if fragments:
+        parts.append('<div class="section-card cyan">')
+        parts.append(f"<h3>Instruction Fragments ({len(fragments)})</h3>")
+        for frag in fragments:
+            parts.append('<div class="fragment-card">')
+            parts.append(
+                f'<div class="fragment-title">'
+                f'{escape(str(frag.get("fragment_name", "")))}'
+                f' <span class="message-chip">'
+                f'{escape(str(frag.get("visibility_scope", "")))}</span>'
+                f' <span class="message-chip">priority '
+                f'{escape(str(frag.get("priority", 0)))}</span>'
+                f' <span class="message-chip">len '
+                f'{escape(str(frag.get("content_length", 0)))}</span>'
+                "</div>"
+            )
+            preview = frag.get("content_preview") or ""
+            parts.append(f"<pre>{escape(str(preview))}</pre>")
+            parts.append("</div>")
+        parts.append("</div>")
+
+    # Assembled messages preview (bounded)
+    preview_rows = envelope.get("assembled_messages_preview") or []
+    truncated = envelope.get("assembled_messages_truncated", False)
+    if preview_rows:
+        parts.append('<div class="section-card blue">')
+        suffix = " (truncated)" if truncated else ""
+        parts.append(
+            f"<h3>Assembled Provider-Facing Messages "
+            f"({len(preview_rows)}{suffix})</h3>"
+        )
+        for row in preview_rows:
+            role = row.get("role", "")
+            content_preview = row.get("content_preview")
+            chips: list[str] = [
+                f'<span class="message-chip">{escape(role)}</span>',
+                f'<span class="message-chip">len '
+                f'{escape(str(row.get("content_length", 0)))}</span>',
+            ]
+            tcc = row.get("tool_calls_count", 0)
+            if tcc:
+                chips.append(
+                    f'<span class="message-chip">{escape(str(tcc))} tool call(s)</span>'
+                )
+            if row.get("has_tool_call_id"):
+                chips.append('<span class="message-chip">tool_call_id</span>')
+            parts.append('<div class="fragment-card">')
+            parts.append(f'<div class="message-meta-row">{"".join(chips)}</div>')
+            if content_preview is not None:
+                parts.append(f"<pre>{escape(str(content_preview))}</pre>")
+            parts.append("</div>")
+        parts.append("</div>")
+
+    # Exposure details
+    if exposed_names is not None:
+        parts.append('<div class="section-card green">')
+        parts.append("<h3>Exposed Capability</h3>")
+        groups = envelope.get("exposed_tool_groups") or []
+        rejected = envelope.get("rejected_reveal_requests") or []
+        if groups:
+            parts.append(
+                f'<div class="message-meta-row">'
+                + "".join(
+                    f'<span class="message-chip">{escape(str(g))}</span>'
+                    for g in groups
+                )
+                + "</div>"
+            )
+        else:
+            parts.append('<div class="empty">no active reveal groups</div>')
+        parts.append(
+            '<div class="message-meta-row">'
+            + "".join(
+                f'<span class="message-chip">{escape(str(n))}</span>'
+                for n in exposed_names
+            )
+            + "</div>"
+        )
+        if rejected:
+            parts.append(
+                "<div style='margin-top:8px;'><strong>Rejected reveals:</strong></div>"
+                '<div class="message-meta-row">'
+                + "".join(
+                    f'<span class="message-chip fail">{escape(str(r))}</span>'
+                    for r in rejected
+                )
+                + "</div>"
+            )
+        parts.append("</div>")
+
+    # Assembler metadata (raw view)
+    asm_meta = envelope.get("assembler_metadata") or {}
+    if asm_meta:
+        parts.append('<div class="section-card">')
+        parts.append("<h3>Assembler Metadata</h3>")
+        parts.append(_render_json_block(asm_meta, title="metadata", open_depth=1))
+        parts.append("</div>")
+
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_assembly_panel(messages: list) -> str:
+    """Knowledge Surface payload/context assembly debug projection.
+
+    This panel is intentionally separate from the transcript view: transcript
+    is canonical turn-by-turn truth, this panel is the assembled provider-
+    facing payload that the backend actually received. The framing banner is
+    load-bearing — without it, operators can confuse the assembled payload
+    with the transcript itself.
+    """
+    parts = []
+    parts.append('<div class="section-card violet">')
+    parts.append("<h3>Assembly / Payload Debug \u00b7 projection only</h3>")
+    parts.append(
+        '<div class="meta">Transcript truth lives in the Transcript tab. '
+        "This tab projects the assembled provider-facing payload the "
+        "Knowledge Surface produced for each planning call, as it was "
+        "persisted by the runtime. The inspector never recomputes "
+        "assembly; if a turn has no envelope, the runtime did not "
+        "produce one.</div>"
+    )
+    parts.append("</div>")
+
+    envelopes = _extract_assembly_envelopes(messages)
+    if not envelopes:
+        parts.append(
+            '<div class="empty">No assembly envelopes persisted for this '
+            "session yet. Run a turn to populate one.</div>"
+        )
+        return "".join(parts)
+
+    for turn_index, env in envelopes:
+        parts.append(_render_envelope_card(turn_index, env))
+    return "".join(parts)
+
+
 def _render_metadata_right_panel(session, messages: list) -> str:
     """Right panel: session identity + message stats."""
     parts = []
@@ -514,7 +719,11 @@ def _html_page(
 
     if current_session:
         # Tab bar
-        main_tabs = [("transcript", "Transcript"), ("debug", "Debug")]
+        main_tabs = [
+            ("transcript", "Transcript"),
+            ("assembly", "Assembly"),
+            ("debug", "Debug"),
+        ]
         parts.append('<div class="tabbar">')
         for tab_id, tab_label in main_tabs:
             active_cls = " active" if active_tab == tab_id else ""
@@ -526,6 +735,8 @@ def _html_page(
         parts.append('<div class="main-panel">')
         if active_tab == "debug":
             parts.append(_render_debug_panel(current_session, messages))
+        elif active_tab == "assembly":
+            parts.append(_render_assembly_panel(messages))
         else:
             parts.append(_render_transcript_panel(messages))
         parts.append("</div>")
