@@ -280,23 +280,33 @@ class _MarkdownStreamingBackend(ExecutionBackend):
         )
 
 
-def test_tty_streaming_path_emits_rendered_once_no_dual_display(
+def test_tty_streaming_visible_then_erased_then_rendered(
     tmp_path: Path, capsys,
 ) -> None:
-    """Regression: Handoff 25 Vio revise instruct.
+    """Regression: Handoff 25 Vio revise-2.
 
-    On a TTY the operator must see the rendered form exactly **once**. The
-    earlier DEC save/restore approach streamed raw markdown then tried to
-    overwrite it, but terminal scrollback retained the raw stream whenever
-    output scrolled past the anchor, producing a visible raw+rendered dual
-    display. The corrected lifecycle: suppress raw deltas on a TTY, show a
-    single static `…` indicator while generating, clear the indicator line
-    with `\\r\\x1b[K` on completion, emit the rendered form once.
+    On a TTY the operator must see raw tokens streaming live (the
+    generation feel) AND end up with a cleanly rendered final view — no
+    dual display. The lifecycle:
+
+      1. `on_partial` writes raw deltas verbatim while tracking the
+         visual rows/columns consumed.
+      2. When the turn closes, the harness emits `\\x1b[<rows>F\\x1b[J`
+         to jump the cursor up `rows` lines to column 0 and clear to
+         end of screen, which removes the streamed region from the
+         viewport.
+      3. The rendered final text is then emitted once through the
+         markdown renderer.
+
+    The earlier DEC `\\x1b7`/`\\x1b8` save/restore approach was reverted
+    because scrolled-off save anchors produced a visible dual display.
+    Line-count erase does not depend on a saved anchor.
     """
     store = SQLiteSessionStore(tmp_path / "test.db")
     mgr = SessionManager(backend=_MarkdownStreamingBackend(), store=store)
     session = mgr.create_session()
 
+    import re as _re
     import sys as _sys
 
     inputs = iter(["hi", "/quit"])
@@ -306,27 +316,39 @@ def test_tty_streaming_path_emits_rendered_once_no_dual_display(
         _run_interactive(mgr, session.session_id)
 
     out = capsys.readouterr().out
-    plain = _strip_ansi(out)
 
-    # Progress indicator was shown then cleared; the legacy DEC save
-    # sequence must no longer appear anywhere.
-    assert "\u2026" in plain  # ellipsis indicator was rendered
-    assert "\r\x1b[K" in out  # indicator line was cleared
-    assert "\x1b7" not in out  # no DEC save cursor
-    assert "\x1b8" not in out  # no DEC restore cursor
+    # Legacy DEC save/restore cursor sequences must never appear — they
+    # were the root cause of the dual-display bug.
+    assert "\x1b7" not in out
+    assert "\x1b8" not in out
 
-    # Raw markdown must never be visible at all: not streamed during
-    # generation and not left behind alongside the rendered form.
-    assert "### heading" not in plain
-    assert "**bold**" not in plain
-    assert "- **bold** body" not in plain
+    # A CSI cursor-previous-line `\x1b[NF` OR a `\r\x1b[K` short-form
+    # erase must be present — that is the post-stream erase step.
+    assert _re.search(r"\x1b\[\d+F\x1b\[J", out) or "\r\x1b[K" in out
 
-    # Rendered form appears, and the body text appears exactly once (no
-    # duplicated raw + rendered copies).
-    assert "heading" in plain
-    assert "\u2022 bold body" in plain
-    assert plain.count("bold body") == 1
-    assert plain.count("heading") == 1
+    # The raw streamed markdown is visible in the captured byte stream
+    # before the erase, because it was written verbatim for the live
+    # streaming effect. That is expected — the terminal displays the
+    # erase as a viewport rewind.
+    pre_erase_match = _re.search(r"\x1b\[\d+F\x1b\[J|\r\x1b\[K", out)
+    assert pre_erase_match is not None
+    pre_erase = out[: pre_erase_match.start()]
+    post_erase = out[pre_erase_match.end():]
+    assert "### heading" in _strip_ansi(pre_erase)
+    assert "**bold**" in _strip_ansi(pre_erase)
+
+    # After the erase sequence the rendered form lands, with no raw
+    # markdown markers — the terminal will show only this form.
+    plain_post = _strip_ansi(post_erase)
+    assert "### heading" not in plain_post
+    assert "**bold**" not in plain_post
+    assert "- **bold** body" not in plain_post
+    assert "heading" in plain_post
+    assert "\u2022 bold body" in plain_post
+    # Rendered body text appears exactly once in the post-erase region
+    # (no rendered-then-re-rendered artifacts).
+    assert plain_post.count("bold body") == 1
+    assert plain_post.count("heading") == 1
 
 
 # ---------------------------------------------------------------------------

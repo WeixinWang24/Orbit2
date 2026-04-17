@@ -26,7 +26,12 @@ from src.governance.runtime_context_disclosure import (
 from src.knowledge.assembly import StructuredContextAssembler
 from src.knowledge.runtime_context import RuntimeContextCollector
 from src.operation.cli.approval import CLIApprovalInteractor
-from src.operation.cli.composer import ComposerAction, PageDownAction, PageUpAction
+from src.operation.cli.composer import (
+    ComposerAction,
+    PageDownAction,
+    PageUpAction,
+    display_width,
+)
 from src.operation.cli.markdown import render_markdown_for_terminal
 from src.operation.cli.style import (
     ACCENT_ASSISTANT,
@@ -265,52 +270,65 @@ def _run_interactive(
             continue
 
         # Regular user input — send to model. Assistant prefix lives on its
-        # own line so the rendered body below lands cleanly, and a single-
-        # line progress indicator can be wiped with `\r\x1b[K` without
-        # touching the prefix.
+        # own line so the streamed body below lands on a clean row at col 0,
+        # which in turn lets the post-stream erase (`\x1b[<N>F\x1b[J`) wipe
+        # exactly the region we wrote without touching the prefix.
         _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET}\n")
 
         is_tty = sys.stdout.isatty()
+        term_width = _term_width() if is_tty else 0
         last_len = 0
-        indicator_shown = False
+        # Visual geometry of the streamed region, measured from the row
+        # right after the `assistant ❯` line. `stream_rows` counts full
+        # line breaks crossed; `stream_col` is the current column. After
+        # the turn closes on a TTY we move cursor up `stream_rows` lines
+        # and clear forward, which removes the streamed raw text from the
+        # viewport before the rendered final text is emitted. An earlier
+        # revision tried DEC `\x1b7`/`\x1b8` save/restore here, but the
+        # anchor became unreliable once streaming scrolled the viewport
+        # and the rendered re-print landed below retained raw stream.
+        stream_rows = 0
+        stream_col = 0
 
         def on_partial(accumulated: str) -> None:
-            nonlocal last_len, indicator_shown
+            nonlocal last_len, stream_rows, stream_col
+            delta = accumulated[last_len:]
+            last_len = len(accumulated)
+            _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
             if is_tty:
-                # Suppress live raw deltas on a TTY. A prior revision
-                # streamed raw then used DEC save/restore + `\x1b[J` to
-                # overwrite with the rendered form, but terminal
-                # scrollback retained the raw stream whenever output
-                # scrolled past the saved anchor, producing a visible
-                # dual display (raw first, rendered below). Stay silent
-                # during generation and emit the rendered form exactly
-                # once when the turn closes; a single static ellipsis
-                # marks that work is in progress.
-                if not indicator_shown:
-                    _write(f"{DIM}\u2026{RESET}")
-                    indicator_shown = True
-                last_len = len(accumulated)
-            else:
-                # Non-TTY sinks (tests, pipes) still receive incremental
-                # raw deltas so downstream consumers retain a progress
-                # stream.
-                delta = accumulated[last_len:]
-                last_len = len(accumulated)
-                _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
+                for ch in delta:
+                    if ch == "\n":
+                        stream_rows += 1
+                        stream_col = 0
+                    elif ch == "\r":
+                        stream_col = 0
+                    else:
+                        w = display_width(ch)
+                        if term_width > 0 and stream_col + w > term_width:
+                            stream_rows += 1
+                            stream_col = w
+                        else:
+                            stream_col += w
 
         plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
         if plan.final_text:
             rendered = render_markdown_for_terminal(plan.final_text)
-            if is_tty:
-                if indicator_shown:
-                    # Wipe the indicator line (cursor sits on it) so the
-                    # rendered body lands on a clean line.
+            if is_tty and last_len > 0:
+                # `\x1b[NF` moves cursor up N lines to column 0 (clamped
+                # at the top of the viewport by every modern terminal);
+                # `\x1b[J` clears from cursor to end of screen. Net
+                # effect: streaming stays visible during generation and
+                # is then replaced in place by the rendered final text.
+                if stream_rows > 0:
+                    _write(f"\x1b[{stream_rows}F\x1b[J")
+                else:
                     _write("\r\x1b[K")
                 _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
             elif last_len == 0:
                 _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
-            # Non-TTY with streaming: already emitted raw deltas above.
+            # Non-TTY with streaming: raw deltas already emitted; leave
+            # them as the canonical output for piped consumers.
         elif last_len == 0:
             _write(f"{ACCENT_ERROR}[no response]{RESET}")
 
