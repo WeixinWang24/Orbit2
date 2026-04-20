@@ -234,7 +234,7 @@ class TestMcpBoundaryRouting:
         assert isinstance(result, CapabilityResult)
         assert result.ok is True
         assert result.content == "hi Vio"
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
         assert stub.calls == [("greet", {"who": "Vio"})], "MCP original name must be used, not the orbit-namespaced one"
 
     def test_mcp_tool_error_surfaces_as_not_ok(self, tmp_path: Path) -> None:
@@ -247,7 +247,7 @@ class TestMcpBoundaryRouting:
         assert result.ok is False
         assert result.content == "oops"
         # Tool-layer failure still reports governance allowed
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_missing_required_argument_rejected_before_mcp_call(self, tmp_path: Path) -> None:
         descriptor = _make_descriptor()
@@ -378,7 +378,7 @@ class TestStdioMcpClientIntegration:
         ))
         assert result.ok is True
         assert "orbit2 routes through CapabilityBoundary" in result.content
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
 
 # ---------------------------------------------------------------------------

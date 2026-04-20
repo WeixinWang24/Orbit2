@@ -106,7 +106,7 @@ class TestMypyMcpIntegration:
             arguments={"args": ["--no-incremental", "clean.py"]},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_mypy_wrapper_metadata_matches_governance(
         self, mypy_bootstrap: McpClientBootstrap

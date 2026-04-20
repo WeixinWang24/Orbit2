@@ -289,13 +289,29 @@ class SessionManager:
         on_partial_text: Callable[[str], None] | None,
     ) -> ExecutionPlan:
         all_messages = self._store.list_messages(session_id)
+
+        # Compute progressive-exposure subset BEFORE assembling context so the
+        # assembler can emit awareness-shaping fragments (Handoff 27) keyed to
+        # the current turn's visible/hidden reveal groups. Execution still
+        # routes through the full boundary; exposure only constrains which
+        # tools the provider sees this turn.
+        decision: ExposureDecision | None = None
+        if self._capability_boundary is not None:
+            decision = compute_exposed_tools(
+                self._capability_boundary.registry, all_messages,
+                strategy=self._disclosure_strategy,
+            )
+            self._last_exposure_decision = decision
+
         # Prefer the structured intermediate when the assembler exposes it so
         # the debug envelope can project instruction fragments. Fall back to
         # the plain assemble() path for assemblers without that shape.
         assembled_context = None
         if hasattr(self._assembler, "assemble_structured"):
             assembled_context = self._assembler.assemble_structured(
-                all_messages, system_prompt=session.system_prompt,
+                all_messages,
+                system_prompt=session.system_prompt,
+                exposure_decision=decision,
             )
             request = assembled_context.to_turn_request()
         else:
@@ -303,20 +319,10 @@ class SessionManager:
                 all_messages, system_prompt=session.system_prompt,
             )
 
-        decision: ExposureDecision | None = None
-        if self._capability_boundary is not None:
+        if self._capability_boundary is not None and decision is not None:
             full_definitions = [
                 d.model_dump() for d in self._capability_boundary.list_definitions()
             ]
-            # Compute progressive-exposure subset from the default-exposed
-            # tools + reveal requests in the transcript. Execution still
-            # routes through the full boundary; exposure only constrains
-            # which tools the provider sees this turn.
-            decision = compute_exposed_tools(
-                self._capability_boundary.registry, all_messages,
-                strategy=self._disclosure_strategy,
-            )
-            self._last_exposure_decision = decision
             request.tool_definitions = filter_definitions_by_exposure(
                 full_definitions, decision.exposed_tool_names
             )

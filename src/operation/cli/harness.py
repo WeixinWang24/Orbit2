@@ -19,11 +19,15 @@ from src.capability.tools import (
     WriteFileTool,
 )
 from src.governance.approval import ApprovalGate, ApprovalMemory
+from src.governance.capability_awareness_disclosure import (
+    BasicCapabilityAwarenessDisclosurePolicy,
+)
 from src.governance.policies import RevealGroupSessionApprovalPolicy
 from src.governance.runtime_context_disclosure import (
     BasicSelfLocationDisclosurePolicy,
 )
 from src.knowledge.assembly import StructuredContextAssembler
+from src.knowledge.capability_awareness import CapabilityAwarenessCollector
 from src.knowledge.runtime_context import RuntimeContextCollector
 from src.operation.cli.approval import CLIApprovalInteractor
 from src.operation.cli.composer import (
@@ -559,6 +563,12 @@ def main() -> None:
         assembler = StructuredContextAssembler(
             runtime_context_collector=RuntimeContextCollector(runtime_root, db_path),
             runtime_context_disclosure_policy=BasicSelfLocationDisclosurePolicy(),
+            capability_awareness_collector=CapabilityAwarenessCollector(
+                boundary.registry
+            ),
+            capability_awareness_disclosure_policy=(
+                BasicCapabilityAwarenessDisclosurePolicy()
+            ),
         )
         manager = SessionManager(
             backend=backend,

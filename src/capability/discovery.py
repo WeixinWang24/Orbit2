@@ -1,4 +1,4 @@
-"""Progressive capability discovery (Handoff 19).
+"""Progressive capability discovery (Handoff 19; Handoff 28 continuation-bridge shaping).
 
 Ships a single tool — `list_available_tools` — that helps the provider
 navigate a capability surface whose full inventory is NOT all exposed on
@@ -7,14 +7,19 @@ every turn. The tool reports:
 - the tools currently visible to the provider this turn (for self-check),
 - the hidden reveal groups available for request (family-level, not
   per-tool exhaustive),
-- a short hint describing how to request a group on the next turn.
+- a short hint describing how to use a revealed group.
 
 When the tool is called with `reveal=<group_name>`, its result carries a
 `reveal_request` marker that the Knowledge Surface assembler consumes on
-the next turn to widen the exposed-tool surface to include that group.
-That marker is the only cross-surface coupling — the discovery tool has
-no privileged access to session state, and the assembler makes the
-decision explicitly from transcript material.
+the NEXT model step to widen the exposed-tool surface to include that
+group. "Next model step" is NOT "next user message" — the session manager's
+tool loop keeps calling the model after each tool result within the SAME
+user turn, so the revealed tools become available to the provider
+immediately on the next tool call inside the same response. Handoff 28
+shapes the confirmation strings to make this continuation bridge explicit,
+targeting the `session_60ee34acb36e` failure where the model returned a
+final text ("please say 继续") after reveal instead of making the downstream
+tool call.
 """
 from __future__ import annotations
 
@@ -99,7 +104,11 @@ class ListAvailableToolsTool(Tool):
                 "to unlock one group, `reveal_batch=[<group>, ...]` to "
                 "request several at once, or `reveal_all_safe=true` for a "
                 "one-shot overview that unlocks every no-approval group. "
-                "Requests take effect on the NEXT turn. Batch modes require "
+                "Revealed tools become available on your NEXT model step, "
+                "which happens immediately inside the same response — do "
+                "NOT return a final text asking the user to continue. "
+                "After a reveal call succeeds, make the downstream tool "
+                "call directly in the same response. Batch modes require "
                 "an active batch-reveal disclosure strategy — if your "
                 "session is running single-reveal they will be recorded "
                 "but ignored."
@@ -111,7 +120,7 @@ class ListAvailableToolsTool(Tool):
                         "type": "string",
                         "description": (
                             "Optional. Name of a single reveal group to "
-                            "request for the next turn."
+                            "unlock for your next tool call in this response."
                         ),
                     },
                     "reveal_batch": {
@@ -119,9 +128,10 @@ class ListAvailableToolsTool(Tool):
                         "items": {"type": "string"},
                         "description": (
                             "Optional. List of reveal group names to unlock "
-                            "on the next turn in one shot. Only honored when "
-                            "the session's disclosure strategy is "
-                            "`batch_reveal`."
+                            "in one shot. The revealed tools become usable "
+                            "on your next tool call in this same response. "
+                            "Only honored when the session's disclosure "
+                            "strategy is `batch_reveal`."
                         ),
                     },
                     "reveal_all_safe": {
@@ -207,7 +217,10 @@ class ListAvailableToolsTool(Tool):
             if cleaned:
                 data[REVEAL_BATCH_REQUEST_MARKER] = cleaned
                 data["reveal_batch_confirmation"] = (
-                    f"groups {sorted(cleaned)!r} will be exposed on the next turn"
+                    f"groups {sorted(cleaned)!r} are now available for your "
+                    "next tool call in this same response — continue by "
+                    "calling the revealed tool directly. Do NOT return a "
+                    "final message asking the user to continue."
                 )
             if rejected:
                 data["reveal_batch_rejected"] = sorted(rejected)
@@ -218,8 +231,10 @@ class ListAvailableToolsTool(Tool):
         if reveal_all_safe is True:
             data[REVEAL_ALL_SAFE_REQUEST_MARKER] = True
             data["reveal_all_safe_confirmation"] = (
-                "every reveal group whose tools are all safe / "
-                "no-approval will be exposed on the next turn"
+                "every reveal group whose tools are all safe / no-approval "
+                "is now available for your next tool call in this same "
+                "response — continue by calling the revealed tools directly. "
+                "Do NOT return a final message asking the user to continue."
             )
 
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -248,7 +263,10 @@ class ListAvailableToolsTool(Tool):
             return
         data[REVEAL_REQUEST_MARKER] = requested
         data["reveal_request_confirmation"] = (
-            f"reveal group {requested!r} will be exposed on the next turn"
+            f"reveal group {requested!r} is now available for your next tool "
+            "call in this same response — continue by calling the revealed "
+            "tool directly. Do NOT return a final message asking the user to "
+            "continue; the tool loop keeps running until you stop calling tools."
         )
 
     def _build_summary(self) -> dict[str, Any]:
@@ -302,9 +320,12 @@ class ListAvailableToolsTool(Tool):
             "reveal_groups": reveal_groups,
             "hidden_tool_count": sum(len(v) for v in hidden_by_group.values()),
             "hint": (
-                "Call this tool again with `reveal=<group_name>` to request "
-                "that group be exposed on the next turn. You do NOT need to "
-                "call list_available_tools again after that — the requested "
-                "group's tools will appear directly on the next turn."
+                "Call this tool with `reveal=<group_name>` to unlock a "
+                "hidden group. The revealed tools become usable on your "
+                "NEXT tool call in the SAME response — the session's tool "
+                "loop keeps calling you until you stop emitting tool "
+                "requests. Do NOT return a final text message asking the "
+                "user to say 'continue' after a successful reveal; make the "
+                "downstream tool call directly."
             ),
         }

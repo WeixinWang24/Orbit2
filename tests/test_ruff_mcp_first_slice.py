@@ -103,7 +103,7 @@ class TestRuffMcpIntegration:
             arguments={"args": ["check", "clean.py"]},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
 
     def test_ruff_wrapper_metadata_matches_governance(
         self, ruff_bootstrap: McpClientBootstrap

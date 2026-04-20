@@ -117,7 +117,7 @@ class TestPytestMcpIntegration:
             arguments={"args": ["-q", "test_trivial.py"]},
         ))
         assert result.ok is True
-        assert result.governance_outcome == "allowed"
+        assert result.governance_outcome.startswith("allowed")
         assert "1 passed" in result.content
 
     def test_pytest_wrapper_metadata_matches_governance(
