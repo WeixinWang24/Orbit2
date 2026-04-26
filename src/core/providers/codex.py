@@ -23,7 +23,7 @@ class OAuthCredential(BaseModel):
 
 
 class CodexConfig(BackendConfig):
-    model: str = "gpt-5.4"
+    model: str
     api_base: str = CODEX_BASE_URL
     bearer_token: Optional[str] = None
     credential_path: Optional[str] = None
@@ -57,7 +57,9 @@ def load_oauth_credential(path: Path) -> OAuthCredential:
 
 class CodexBackend(ExecutionBackend):
     def __init__(self, config: Optional[CodexConfig] = None, repo_root: Optional[Path] = None) -> None:
-        self._config = config or CodexConfig()
+        if config is None:
+            raise ValueError("CodexBackend requires CodexConfig with an explicit model")
+        self._config = config
         self._repo_root = repo_root or Path.cwd()
         self._credential: Optional[OAuthCredential] = None
         self._bearer_token = self._resolve_bearer_token()

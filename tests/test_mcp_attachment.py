@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from src.capability.boundary import CapabilityBoundary
-from src.capability.models import CapabilityResult, ToolDefinition, ToolResult
+from src.capability.models import CapabilityLayer, CapabilityResult, ToolDefinition, ToolResult
 from src.capability.mcp import (
     McpClientBootstrap,
     McpToolDescriptor,
@@ -34,6 +35,46 @@ from src.core.runtime.models import ToolRequest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class TestLayeredMcpServerLayout:
+    def test_default_workspace_modules_use_layered_entrypoints(self) -> None:
+        from src.capability.mcp_servers import DEFAULT_WORKSPACE_MCP_SERVER_MODULES
+
+        modules = {m.server_name: m for m in DEFAULT_WORKSPACE_MCP_SERVER_MODULES}
+
+        assert modules["filesystem"].capability_layer == CapabilityLayer.RAW_PRIMITIVE
+        assert modules["filesystem"].module_path.endswith(
+            "mcp_servers.l0_raw.filesystem.stdio_server"
+        )
+        assert modules["structured_filesystem"].capability_layer == CapabilityLayer.STRUCTURED_PRIMITIVE
+        assert modules["structured_filesystem"].module_path.endswith(
+            "mcp_servers.l1_structured.filesystem.stdio_server"
+        )
+        assert modules["structured_git"].capability_layer == CapabilityLayer.STRUCTURED_PRIMITIVE
+        assert modules["structured_git"].module_path.endswith(
+            "mcp_servers.l1_structured.git.stdio_server"
+        )
+        assert modules["pytest"].capability_layer == CapabilityLayer.TOOLCHAIN
+        assert modules["pytest"].module_path.endswith(
+            "mcp_servers.l2_toolchain.pytest.stdio_server"
+        )
+
+    def test_layered_entrypoint_modules_reuse_legacy_mcp_objects(self) -> None:
+        from src.capability.mcp_servers import DEFAULT_WORKSPACE_MCP_SERVER_MODULES
+
+        for server_module in DEFAULT_WORKSPACE_MCP_SERVER_MODULES:
+            layered = importlib.import_module(server_module.module_path)
+            legacy = importlib.import_module(server_module.legacy_module_path)
+            assert layered.mcp is legacy.mcp
+
+    def test_obsidian_module_uses_l2_toolchain_entrypoint(self) -> None:
+        from src.capability.mcp_servers import OBSIDIAN_MCP_SERVER_MODULE
+
+        assert OBSIDIAN_MCP_SERVER_MODULE.capability_layer == CapabilityLayer.TOOLCHAIN
+        assert OBSIDIAN_MCP_SERVER_MODULE.module_path.endswith(
+            "mcp_servers.l2_toolchain.obsidian.stdio_server"
+        )
 
 
 # ---------------------------------------------------------------------------

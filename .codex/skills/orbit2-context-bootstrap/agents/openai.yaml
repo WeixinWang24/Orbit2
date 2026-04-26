@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orbit2 Context Bootstrap"
+  short_description: "Bootstrap Orbit2 work from the Obsidian KB"
+  default_prompt: "Use $orbit2-context-bootstrap to load the right Orbit2 KB context before working."

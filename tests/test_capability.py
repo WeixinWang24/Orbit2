@@ -21,7 +21,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.capability.boundary import CapabilityBoundary
-from src.capability.models import CapabilityResult, GovernanceOutcome, ToolDefinition, ToolResult
+from src.capability.models import (
+    CapabilityLayer,
+    CapabilityResult,
+    GovernanceOutcome,
+    ToolDefinition,
+    ToolResult,
+)
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
     ApplyExactHunkTool,
@@ -128,6 +134,21 @@ class TestCapabilityRegistry:
         assert len(defs) == 1
         assert defs[0].name == "native__read_file"
 
+    def test_list_metadata_keeps_orbit_metadata_separate_from_tool_schema(
+        self, workspace: Path
+    ) -> None:
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+
+        defs = registry.list_definitions()
+        metadata = registry.list_metadata()
+
+        assert len(metadata) == 1
+        assert metadata[0].name == "native__read_file"
+        assert metadata[0].reveal_group == "native_fs_read"
+        assert metadata[0].capability_layer == CapabilityLayer.RAW_PRIMITIVE
+        assert "capability_layer" not in defs[0].model_dump()
+
 
 # ---------------------------------------------------------------------------
 # CapabilityBoundary governance tests
@@ -151,6 +172,20 @@ class TestCapabilityBoundary:
         assert result.tool_call_id == "call_1"
         assert result.tool_name == "native__read_file"
         assert result.governance_outcome.startswith("allowed")
+
+    def test_boundary_exposes_capability_metadata_for_runtime_surfaces(
+        self, workspace: Path
+    ) -> None:
+        registry = CapabilityRegistry()
+        registry.register(ReadFileTool(workspace))
+        boundary = CapabilityBoundary(registry, workspace)
+
+        metadata = boundary.list_metadata()
+
+        assert len(metadata) == 1
+        assert metadata[0].name == "native__read_file"
+        assert metadata[0].default_exposed is True
+        assert metadata[0].capability_layer == CapabilityLayer.RAW_PRIMITIVE
 
     def test_governance_denies_path_escape(self, workspace: Path) -> None:
         registry = CapabilityRegistry()
@@ -668,7 +703,10 @@ class TestCodexToolSupport:
             f'"expires_at_epoch_ms":{int(__import__("time").time() * 1000) + 60000}}}',
             encoding="utf-8",
         )
-        return CodexBackend(CodexConfig(credential_path=str(credential_path)), repo_root=tmp_path)
+        return CodexBackend(
+            CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
+            repo_root=tmp_path,
+        )
 
     def test_codex_payload_includes_tool_definitions(self, tmp_path: Path) -> None:
         backend = self._make_codex_backend(tmp_path)
@@ -919,8 +957,8 @@ class TestCLICapabilityWiring:
     def test_build_capability_boundary(self, workspace: Path) -> None:
         """Regression guard: every MCP family that ships with a server
         implementation must be attached by default. Families whose servers are
-        NOT shipped by Orbit2 (browser / obsidian) are deliberately absent.
-        Process ships a server as of Handoff 24 and IS included."""
+        not runtime-parameter-scoped are attached by default. Obsidian is
+        deliberately absent unless a vault root is supplied."""
         from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
@@ -945,6 +983,10 @@ class TestCLICapabilityWiring:
             "mcp__filesystem__directory_tree",
             "mcp__filesystem__read_multiple_files",
             "mcp__filesystem__list_directory_with_sizes",
+            "mcp__structured_filesystem__read_file_region",
+            "mcp__structured_filesystem__grep_scoped",
+            "mcp__structured_git__read_diff_hunk",
+            "mcp__structured_git__read_git_show_region",
             "mcp__git__git_status",
             "mcp__git__git_diff",
             "mcp__git__git_log",
@@ -964,14 +1006,50 @@ class TestCLICapabilityWiring:
 
     def test_default_boundary_attaches_every_shipped_family(self, workspace: Path) -> None:
         """One-line sentinel: for each MCP family that ships a server module
-        under `src/capability/mcp_servers/`, at least one tool must be in the
-        default boundary. Catches 'shipped but not wired' regressions directly."""
+        under `src/capability/mcp_servers/` and is workspace-root scoped, at
+        least one tool must be in the default boundary. Obsidian is excluded
+        because it requires a vault path runtime parameter."""
         from src.operation.cli.harness import _build_capability_boundary
         boundary = _build_capability_boundary(workspace)
         names = {d.name for d in boundary.list_definitions()}
-        for family in ("filesystem", "git", "pytest", "ruff", "mypy", "process"):
+        for family in (
+            "filesystem", "structured_filesystem", "structured_git",
+            "git", "pytest", "ruff", "mypy", "process"
+        ):
             matching = [n for n in names if n.startswith(f"mcp__{family}__")]
             assert matching, f"shipped MCP family {family!r} not attached to default boundary"
+
+    def test_workspace_mcp_env_exports_orbit2_mcp_variables(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.operation.cli.harness import _workspace_mcp_env
+
+        monkeypatch.setenv("ORBIT2_MCP_STRUCTURED_FS_MAX_LINE_SPAN", "40")
+        monkeypatch.setenv("ORBIT2_PROVIDER_MODEL", "not-an-mcp-var")
+
+        env = _workspace_mcp_env(workspace)
+
+        assert env["ORBIT_WORKSPACE_ROOT"] == str(workspace)
+        assert env["ORBIT2_MCP_STRUCTURED_FS_MAX_LINE_SPAN"] == "40"
+        assert "ORBIT2_PROVIDER_MODEL" not in env
+
+    def test_obsidian_boundary_attaches_from_runtime_param(
+        self, workspace: Path, tmp_path: Path
+    ) -> None:
+        from src.operation.cli.harness import _build_capability_boundary
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "Index.md").write_text("# Index\n", encoding="utf-8")
+
+        boundary = _build_capability_boundary(
+            workspace,
+            obsidian_vault_root=vault,
+        )
+
+        names = {d.name for d in boundary.list_definitions()}
+        assert "mcp__obsidian__obsidian_check_availability" in names
+        assert "mcp__obsidian__obsidian_read_note" in names
 
     def test_cli_manager_has_capability_boundary(self, workspace: Path) -> None:
         from src.operation.cli.harness import _build_capability_boundary
@@ -1042,7 +1120,10 @@ class TestCodexInputIdField:
             f'"expires_at_epoch_ms":{int(time.time() * 1000) + 60000}}}',
             encoding="utf-8",
         )
-        backend = CodexBackend(CodexConfig(credential_path=str(credential_path)), repo_root=tmp_path)
+        backend = CodexBackend(
+            CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
+            repo_root=tmp_path,
+        )
         request = TurnRequest(
             messages=[
                 Message(role="user", content="read it"),

@@ -9,6 +9,10 @@ from src.capability.boundary import CapabilityBoundary
 from src.capability.discovery import ListAvailableToolsTool
 from src.capability.mcp.attach import attach_mcp_server
 from src.capability.mcp.models import McpClientBootstrap
+from src.capability.mcp_servers import (
+    DEFAULT_WORKSPACE_MCP_SERVER_MODULES,
+    OBSIDIAN_MCP_SERVER_MODULE,
+)
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
     ApplyExactHunkTool,
@@ -26,9 +30,13 @@ from src.governance.policies import RevealGroupSessionApprovalPolicy
 from src.governance.runtime_context_disclosure import (
     BasicSelfLocationDisclosurePolicy,
 )
+from src.governance.workspace_instructions_disclosure import (
+    BasicWorkspaceInstructionsDisclosurePolicy,
+)
 from src.knowledge.assembly import StructuredContextAssembler
 from src.knowledge.capability_awareness import CapabilityAwarenessCollector
 from src.knowledge.runtime_context import RuntimeContextCollector
+from src.knowledge.workspace_instructions import WorkspaceInstructionsCollector
 from src.operation.cli.approval import CLIApprovalInteractor
 from src.operation.cli.composer import (
     ComposerAction,
@@ -36,7 +44,10 @@ from src.operation.cli.composer import (
     PageUpAction,
     display_width,
 )
-from src.operation.cli.markdown import render_markdown_for_terminal
+from src.operation.cli.markdown import (
+    render_markdown_for_terminal,
+    wrap_ansi_text_for_terminal,
+)
 from src.operation.cli.style import (
     ACCENT_ASSISTANT,
     ACCENT_ERROR,
@@ -55,12 +66,23 @@ from src.operation.cli.style import (
 from src.core.providers.base import ExecutionBackend
 from src.core.providers.codex import CodexBackend, CodexConfig
 from src.core.providers.openai_compatible import OpenAICompatibleBackend, OpenAICompatibleConfig
-from src.config.runtime import REPO_ROOT, default_db_path, resolve_runtime_root
+from src.config.runtime import (
+    REPO_ROOT,
+    default_db_path,
+    resolve_obsidian_vault_root,
+    resolve_provider_model,
+    resolve_runtime_root,
+    resolve_vllm_provider_settings,
+)
 from src.core.runtime.session import SessionManager
 from src.core.store.sqlite import SQLiteSessionStore
 
 
-def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
+def _build_capability_boundary(
+    workspace_root: Path,
+    *,
+    obsidian_vault_root: Path | None = None,
+) -> CapabilityBoundary:
     registry = CapabilityRegistry()
     registry.register(ReadFileTool(workspace_root))
     registry.register(WriteFileTool(workspace_root))
@@ -69,26 +91,36 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     registry.register(ReplaceBlockInFileTool(workspace_root))
     registry.register(ApplyExactHunkTool(workspace_root))
 
-    shared_env = {"ORBIT_WORKSPACE_ROOT": str(workspace_root)}
-    # Every MCP family shipped with a server implementation in this repo is
-    # wired here so the default operator capability boundary reaches them
-    # without any per-session configuration. Governance-overlay-only families
-    # (browser / obsidian — their servers aren't shipped by Orbit2 yet) are
-    # NOT attached by default. Process ships a server as of Handoff 24 and
-    # IS attached; its `run_process` tool is approval-required.
-    for server_name, module_path in (
-        ("filesystem", "src.capability.mcp_servers.filesystem.stdio_server"),
-        ("git", "src.capability.mcp_servers.git.stdio_server"),
-        ("pytest", "src.capability.mcp_servers.pytest.stdio_server"),
-        ("ruff", "src.capability.mcp_servers.ruff.stdio_server"),
-        ("mypy", "src.capability.mcp_servers.mypy.stdio_server"),
-        ("process", "src.capability.mcp_servers.process.stdio_server"),
-    ):
+    shared_env = _workspace_mcp_env(workspace_root)
+    # MCP families that are workspace-root scoped are wired here so the
+    # default operator capability boundary reaches them without per-session
+    # configuration. Obsidian is attached below only when the runtime provides
+    # a vault path, because a vault is not necessarily the Orbit2 workspace.
+    for server_module in DEFAULT_WORKSPACE_MCP_SERVER_MODULES:
         attach_mcp_server(
             McpClientBootstrap(
-                server_name=server_name,
+                server_name=server_module.server_name,
                 command=sys.executable,
-                args=("-m", module_path, str(workspace_root)),
+                args=("-m", server_module.module_path, str(workspace_root)),
+                env=shared_env,
+            ),
+            registry,
+        )
+
+    if obsidian_vault_root is not None:
+        vault_root = obsidian_vault_root.expanduser().resolve()
+        if not vault_root.exists() or not vault_root.is_dir():
+            raise ValueError(f"obsidian vault root is invalid: {vault_root}")
+        attach_mcp_server(
+            McpClientBootstrap(
+                server_name="obsidian",
+                command=sys.executable,
+                args=(
+                    "-m",
+                    OBSIDIAN_MCP_SERVER_MODULE.module_path,
+                    "--vault",
+                    str(vault_root),
+                ),
                 env=shared_env,
             ),
             registry,
@@ -113,15 +145,34 @@ def _build_capability_boundary(workspace_root: Path) -> CapabilityBoundary:
     return CapabilityBoundary(
         registry, workspace_root, approval_gate=approval_gate,
     )
+
+
+def _workspace_mcp_env(workspace_root: Path) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("ORBIT2_MCP_")
+    }
+    env["ORBIT_WORKSPACE_ROOT"] = str(workspace_root)
+    return env
+
+
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
-def _build_backend(name: str) -> ExecutionBackend:
+def _build_backend(name: str, model: str, runtime_root: Path | None = None) -> ExecutionBackend:
     if name == "codex":
-        return CodexBackend(CodexConfig(), repo_root=REPO_ROOT)
+        return CodexBackend(CodexConfig(model=model), repo_root=REPO_ROOT)
     if name == "vllm":
+        vllm_settings = resolve_vllm_provider_settings(runtime_root or REPO_ROOT)
         return OpenAICompatibleBackend(
-            OpenAICompatibleConfig(base_url="http://localhost:8000/v1"),
+            OpenAICompatibleConfig(
+                model=model,
+                base_url=vllm_settings.base_url,
+                api_key=vllm_settings.api_key,
+                basic_auth_username=vllm_settings.basic_auth_username,
+                basic_auth_password=vllm_settings.basic_auth_password,
+            ),
         )
     raise ValueError(f"Unknown backend: {name}")
 
@@ -150,6 +201,10 @@ def _read_input(prompt: str) -> str:
 def _write(s: str) -> None:
     sys.stdout.write(s)
     sys.stdout.flush()
+
+
+def _wrap_for_tty(text: str, width: int) -> str:
+    return wrap_ansi_text_for_terminal(text, width) if width > 0 else text
 
 
 def _switch_session_relative(
@@ -317,7 +372,9 @@ def _run_interactive(
         plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
         if plan.final_text:
-            rendered = render_markdown_for_terminal(plan.final_text)
+            rendered = render_markdown_for_terminal(
+                plan.final_text, base_color=CONTENT_ASSISTANT,
+            )
             if is_tty and last_len > 0:
                 # `\x1b[NF` moves cursor up N lines to column 0 (clamped
                 # at the top of the viewport by every modern terminal);
@@ -328,8 +385,9 @@ def _run_interactive(
                     _write(f"\x1b[{stream_rows}F\x1b[J")
                 else:
                     _write("\r\x1b[K")
-                _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
+                _write(f"{CONTENT_ASSISTANT}{_wrap_for_tty(rendered, term_width)}{RESET}")
             elif last_len == 0:
+                rendered = _wrap_for_tty(rendered, term_width if is_tty else 0)
                 _write(f"{CONTENT_ASSISTANT}{rendered}{RESET}")
             # Non-TTY with streaming: raw deltas already emitted; leave
             # them as the canonical output for piped consumers.
@@ -501,7 +559,10 @@ def _show_history(manager: SessionManager, session_id: str) -> None:
             # Markdown-aware rendering for assistant messages only. Fenced
             # code blocks + inline code + bold are recognised; other roles
             # stay verbatim so user input and tool output aren't reformatted.
-            rendered = render_markdown_for_terminal(content)
+            rendered = render_markdown_for_terminal(
+                content, base_color=body_color,
+            )
+            rendered = _wrap_for_tty(rendered, max(0, width - len(role) - 3))
             _write(
                 f"  {label_color}{BOLD}{role}{RESET}"
                 f" {body_color}{rendered}{RESET}\n"
@@ -548,6 +609,14 @@ def main() -> None:
             "Defaults to the Orbit2 repo checkout. Process cwd is never consulted."
         ),
     )
+    parser.add_argument(
+        "--obsidian-vault-root",
+        default=None,
+        help=(
+            "Optional Obsidian vault root to attach as the obsidian MCP server. "
+            "Overrides .runtime/agent_runtime.toml [obsidian].vault_root."
+        ),
+    )
     args = parser.parse_args()
 
     runtime_root = resolve_runtime_root(args.runtime_root)
@@ -558,8 +627,18 @@ def main() -> None:
     )
     store = SQLiteSessionStore(db_path)
     try:
-        backend = _build_backend(args.backend)
-        boundary = _build_capability_boundary(runtime_root.path)
+        provider_model = resolve_provider_model(runtime_root)
+        backend = _build_backend(args.backend, provider_model.value, runtime_root.path)
+        obsidian_vault_root = resolve_obsidian_vault_root(
+            runtime_root,
+            args.obsidian_vault_root,
+        )
+        boundary = _build_capability_boundary(
+            runtime_root.path,
+            obsidian_vault_root=(
+                obsidian_vault_root.path if obsidian_vault_root else None
+            ),
+        )
         assembler = StructuredContextAssembler(
             runtime_context_collector=RuntimeContextCollector(runtime_root, db_path),
             runtime_context_disclosure_policy=BasicSelfLocationDisclosurePolicy(),
@@ -568,6 +647,12 @@ def main() -> None:
             ),
             capability_awareness_disclosure_policy=(
                 BasicCapabilityAwarenessDisclosurePolicy()
+            ),
+            workspace_instructions_collector=WorkspaceInstructionsCollector(
+                runtime_root.path
+            ),
+            workspace_instructions_disclosure_policy=(
+                BasicWorkspaceInstructionsDisclosurePolicy()
             ),
         )
         manager = SessionManager(

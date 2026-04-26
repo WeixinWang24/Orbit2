@@ -210,6 +210,46 @@ class TestMypyFamilyGovernance:
         assert g["requires_approval"] is False
 
 
+class TestStructuredFilesystemFamilyGovernance:
+    @pytest.mark.parametrize("tool", ["read_file_region", "grep_scoped"])
+    def test_structured_filesystem_reads_are_safe_path_exists(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="structured_filesystem",
+            original_tool_name=tool,
+        )
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+        assert g["environment_check_kind"] == "path_exists"
+
+    def test_unknown_structured_filesystem_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="structured_filesystem",
+            original_tool_name="read_file_summary",
+        )
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestStructuredGitFamilyGovernance:
+    @pytest.mark.parametrize("tool", ["read_diff_hunk", "read_git_show_region"])
+    def test_structured_git_reads_are_safe(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="structured_git",
+            original_tool_name=tool,
+        )
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+        assert g["environment_check_kind"] == "none"
+
+    def test_unknown_structured_git_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="structured_git",
+            original_tool_name="read_revision_hunk",
+        )
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
 class TestObsidianFamilyGovernance:
     @pytest.mark.parametrize(
         "tool",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Callable, Optional
 
@@ -18,15 +19,24 @@ class OpenAICompatibleConfig(BackendConfig):
     model: str = "default"
     base_url: str = "http://localhost:8000/v1"
     api_key: Optional[str] = None
+    basic_auth_username: Optional[str] = None
+    basic_auth_password: Optional[str] = None
 
 
 class OpenAICompatibleBackend(ExecutionBackend):
     def __init__(self, config: Optional[OpenAICompatibleConfig] = None) -> None:
         self._config = config or OpenAICompatibleConfig()
-        self._client = openai.OpenAI(
-            base_url=self._config.base_url,
-            api_key=self._config.api_key if self._config.api_key is not None else "EMPTY",
-        )
+        client_kwargs: dict = {
+            "base_url": self._config.base_url,
+            "api_key": self._config.api_key if self._config.api_key is not None else "EMPTY",
+        }
+        if self._config.basic_auth_username is not None:
+            token = _basic_auth_token(
+                self._config.basic_auth_username,
+                self._config.basic_auth_password or "",
+            )
+            client_kwargs["default_headers"] = {"Authorization": f"Basic {token}"}
+        self._client = openai.OpenAI(**client_kwargs)
 
     @property
     def backend_name(self) -> str:
@@ -47,7 +57,10 @@ class OpenAICompatibleBackend(ExecutionBackend):
         tools = self._build_tools(request)
         if tools:
             kwargs["tools"] = tools
-        response = self._client.chat.completions.create(**kwargs)
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except openai.APIError as exc:
+            return self._normalize_provider_error(exc)
         return self._normalize_response_to_plan(response)
 
     def _build_chat_messages(self, request: TurnRequest) -> list[dict]:
@@ -126,3 +139,27 @@ class OpenAICompatibleBackend(ExecutionBackend):
                 } if response.usage else {},
             },
         )
+
+    def _normalize_provider_error(self, exc: openai.APIError) -> ExecutionPlan:
+        error_type = type(exc).__name__
+        text = (
+            f"{self.backend_name} request failed: {error_type}: {exc}. "
+            f"base_url={self._config.base_url}"
+        )
+        normalized = ProviderNormalizedResult(
+            source_backend=self.backend_name,
+            plan_label=f"{self.backend_name}-provider-error",
+            final_text=text,
+            model=self._config.model,
+            metadata={
+                "error_type": error_type,
+                "error": str(exc),
+                "base_url": self._config.base_url,
+            },
+        )
+        return self._normalize_to_plan(normalized)
+
+
+def _basic_auth_token(username: str, password: str) -> str:
+    raw = f"{username}:{password}".encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")

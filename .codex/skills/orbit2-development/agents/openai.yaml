@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orbit2 Development"
+  short_description: "Project rules for Orbit2 development"
+  default_prompt: "Use $orbit2-development when working on Orbit2 development tasks."

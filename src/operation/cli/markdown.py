@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 
+from src.operation.cli.composer import display_width
 from src.operation.cli.style import (
     ACCENT_MUTED,
     ACCENT_SUCCESS,
     ACCENT_SYSTEM,
     BOLD,
+    CONTENT_CODE,
+    CONTENT_INLINE_CODE,
     DIM,
     ITALIC,
     RESET,
@@ -46,9 +49,12 @@ _ITALIC_RE = re.compile(
 # terminal. Two newlines (single blank line between paragraphs) are left
 # untouched on purpose.
 _BLANK_SQUASH_RE = re.compile(r"\n{3,}")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
-def render_markdown_for_terminal(text: str, *, indent: str = "    ") -> str:
+def render_markdown_for_terminal(
+    text: str, *, indent: str = "    ", base_color: str = "",
+) -> str:
     """Render a bounded subset of markdown for terminal display.
 
     Scope:
@@ -65,40 +71,94 @@ def render_markdown_for_terminal(text: str, *, indent: str = "    ") -> str:
 
     `indent` is applied to every fenced-code-block line so blocks stand
     out from surrounding prose in the transcript view.
+
+    `base_color`: when the rendered output is embedded inside an outer
+    colored region (e.g. the CLI harness wraps the rendered assistant
+    body in `CONTENT_ASSISTANT … RESET`), a bare `RESET` at the close of
+    each inline span would drop the outer color for the remainder of the
+    line. Setting `base_color` makes every internal span close with
+    `RESET + base_color` so the outer color is re-applied immediately
+    and ordinary text following styled spans keeps the intended color.
+    The default empty string preserves pre-existing behavior.
     """
     if not text:
         return text
 
+    close = _close(base_color)
     rendered_parts: list[str] = []
     last_end = 0
     for match in _FENCED_RE.finditer(text):
         prose = text[last_end : match.start()]
         if prose:
-            rendered_parts.append(_render_prose(prose))
+            rendered_parts.append(_render_prose(prose, close=close))
         lang = match.group(1).strip()
         code_body = match.group(2)
-        rendered_parts.append(_render_fenced(lang, code_body, indent=indent))
+        rendered_parts.append(
+            _render_fenced(lang, code_body, indent=indent, close=close),
+        )
         last_end = match.end()
     tail = text[last_end:]
     if tail:
-        rendered_parts.append(_render_prose(tail))
+        rendered_parts.append(_render_prose(tail, close=close))
 
     return "".join(rendered_parts)
 
 
-def _render_prose(text: str) -> str:
-    text = _HEADING_RE.sub(_render_heading_match, text)
-    text = _BULLET_RE.sub(_render_bullet_match, text)
-    text = _BOLD_RE.sub(lambda m: f"{BOLD}{m.group(1)}{RESET}", text)
-    text = _ITALIC_RE.sub(lambda m: f"{ITALIC}{m.group(1)}{RESET}", text)
+def wrap_ansi_text_for_terminal(text: str, width: int) -> str:
+    """Soft-wrap rendered terminal text by visible display width.
+
+    ANSI SGR sequences are preserved and treated as zero-width. This avoids
+    delegating long message wrapping to terminal auto-wrap, which is less
+    predictable once colored spans and CJK double-width characters mix.
+    """
+    if width <= 0 or not text:
+        return text
+
+    parts: list[str] = []
+    col = 0
+    i = 0
+    while i < len(text):
+        ansi = _ANSI_RE.match(text, i)
+        if ansi:
+            parts.append(ansi.group(0))
+            i = ansi.end()
+            continue
+
+        ch = text[i]
+        if ch == "\n":
+            parts.append(ch)
+            col = 0
+            i += 1
+            continue
+
+        w = display_width(ch)
+        if w > 0 and col > 0 and col + w > width:
+            parts.append("\n")
+            col = 0
+        parts.append(ch)
+        col += w
+        i += 1
+
+    return "".join(parts)
+
+
+def _close(base_color: str) -> str:
+    return f"{RESET}{base_color}" if base_color else RESET
+
+
+def _render_prose(text: str, *, close: str) -> str:
+    text = _HEADING_RE.sub(lambda m: _render_heading_match(m, close), text)
+    text = _BULLET_RE.sub(lambda m: _render_bullet_match(m, close), text)
+    text = _BOLD_RE.sub(lambda m: f"{BOLD}{m.group(1)}{close}", text)
+    text = _ITALIC_RE.sub(lambda m: f"{ITALIC}{m.group(1)}{close}", text)
     text = _INLINE_CODE_RE.sub(
-        lambda m: f"{ACCENT_MUTED}{m.group(1)}{RESET}", text,
+        lambda m: f"{CONTENT_INLINE_CODE}{m.group(1)}{close}", text,
     )
     text = _BLANK_SQUASH_RE.sub("\n\n", text)
     return text
 
 
-def _render_heading_match(match: re.Match[str]) -> str:
+def _render_heading_match(match: re.Match[str], close: str) -> str:
     level = len(match.group(1))
     body = match.group(2).strip()
     if level <= 2:
@@ -107,24 +167,26 @@ def _render_heading_match(match: re.Match[str]) -> str:
         accent = ACCENT_SUCCESS
     else:
         accent = ACCENT_MUTED
-    return f"{BOLD}{accent}{body}{RESET}"
+    return f"{BOLD}{accent}{body}{close}"
 
 
-def _render_bullet_match(match: re.Match[str]) -> str:
+def _render_bullet_match(match: re.Match[str], close: str) -> str:
     lead = match.group(1)
     body = match.group(2)
-    return f"{lead}{ACCENT_MUTED}\u2022{RESET} {body}"
+    return f"{lead}{ACCENT_MUTED}\u2022{close} {body}"
 
 
-def _render_fenced(lang: str, body: str, *, indent: str) -> str:
+def _render_fenced(lang: str, body: str, *, indent: str, close: str) -> str:
     body = body.rstrip("\n")
-    indented_lines = [f"{indent}{DIM}{line}{RESET}" for line in body.split("\n")]
+    indented_lines = [
+        f"{indent}{CONTENT_CODE}{line}{close}" for line in body.split("\n")
+    ]
     indented_block = "\n".join(indented_lines)
     header = (
-        f"{indent}{ACCENT_SYSTEM}\u250c{RESET}"
-        f" {DIM}code{RESET}"
-        + (f" {ACCENT_MUTED}({lang}){RESET}" if lang else "")
+        f"{indent}{ACCENT_SYSTEM}\u250c{close}"
+        f" {DIM}code{close}"
+        + (f" {ACCENT_MUTED}({lang}){close}" if lang else "")
         + "\n"
     )
-    footer = f"\n{indent}{ACCENT_SYSTEM}\u2514{RESET}"
+    footer = f"\n{indent}{ACCENT_SYSTEM}\u2514{close}"
     return header + indented_block + footer

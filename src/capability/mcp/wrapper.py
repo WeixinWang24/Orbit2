@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.capability.models import ToolDefinition, ToolResult, is_protected_relative_path
+from src.capability.models import (
+    CapabilityLayer,
+    ToolDefinition,
+    ToolResult,
+    is_protected_relative_path,
+)
 from src.capability.mcp.client import McpClient
 from src.capability.mcp.governance import (
     DEFAULT_MCP_GOVERNANCE,
     McpGovernanceMetadata,
     resolve_filesystem_mcp_target_path,
 )
+from src.capability.mcp.layers import classify_mcp_capability_layer
 from src.capability.mcp.models import McpClientBootstrap, McpToolDescriptor
 from src.capability.tools.base import Tool
 
@@ -109,6 +115,13 @@ class McpToolWrapper(Tool):
         of the default-exposed minimum. Called by the harness after attach
         so the decision lives with the CLI policy layer, not the wrapper."""
         self._default_exposed = bool(exposed)
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        return classify_mcp_capability_layer(
+            server_name=self._descriptor.server_name,
+            original_tool_name=self._descriptor.original_name,
+        )
 
     @property
     def descriptor(self) -> McpToolDescriptor:

@@ -43,8 +43,11 @@ ACCENT_ERROR = FG_BRIGHT_RED              # red — errors
 ACCENT_MUTED = FG_BRIGHT_BLACK            # grey — dim metadata
 
 # Content body colors
-CONTENT_USER = fg_rgb(90, 150, 215)       # muted steel-blue
-CONTENT_ASSISTANT = fg_rgb(150, 112, 198) # muted violet
+# Keep message text readable on black terminal backgrounds.
+CONTENT_USER = fg_rgb(135, 195, 255)       # bright steel-blue
+CONTENT_ASSISTANT = fg_rgb(215, 190, 255)  # bright violet/lavender
+CONTENT_CODE = fg_rgb(225, 225, 235)       # bright neutral for code blocks
+CONTENT_INLINE_CODE = fg_rgb(245, 220, 140) # warm bright inline code
 
 # Divider
 DIVIDER_COLOR = fg_rgb(60, 60, 80)        # very dim purple-grey
@@ -67,9 +70,11 @@ TRUECOLOR = _detect_truecolor()
 
 # Fallback to standard colors if truecolor not available
 if not TRUECOLOR:
-    ACCENT_USER = f"{CSI}94m"         # bright blue
-    CONTENT_USER = f"{CSI}34m"        # blue
-    CONTENT_ASSISTANT = f"{CSI}35m"   # magenta
+    ACCENT_USER = f"{CSI}94m"             # bright blue
+    CONTENT_USER = f"{CSI}94m"            # bright blue
+    CONTENT_ASSISTANT = f"{CSI}95m"       # bright magenta
+    CONTENT_CODE = f"{CSI}97m"            # bright white
+    CONTENT_INLINE_CODE = f"{CSI}93m"     # bright yellow
     DIVIDER_COLOR = DIM
 
 

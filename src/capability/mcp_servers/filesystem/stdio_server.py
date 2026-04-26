@@ -25,6 +25,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.models import is_protected_relative_path
+
 SERVER_NAME = "filesystem"
 WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
 DEFAULT_MAX_READ_BYTES = 64 * 1024
@@ -37,6 +39,10 @@ DEFAULT_GREP_MAX_LINE_CHARS = 2000
 DEFAULT_MAX_TREE_DEPTH = 4
 DEFAULT_MAX_TREE_ENTRIES = 500
 DEFAULT_MAX_MULTI_READ_FILES = 20
+GREP_IGNORED_PARTS_ENV = "ORBIT2_MCP_FS_GREP_IGNORED_PARTS"
+GREP_IGNORED_SUFFIXES_ENV = "ORBIT2_MCP_FS_GREP_IGNORED_SUFFIXES"
+DEFAULT_GREP_IGNORED_PARTS = "__pycache__"
+DEFAULT_GREP_IGNORED_SUFFIXES = ".pyc,.pyo"
 
 
 def _workspace_root() -> Path:
@@ -78,6 +84,20 @@ def _resolve_safe_existing_file(path: str) -> Path:
     if not target.is_file():
         raise ValueError("path is not a file")
     return target
+
+
+def _csv_env_values(env_name: str, fallback_csv: str) -> frozenset[str]:
+    raw = os.environ.get(env_name)
+    source = fallback_csv if raw is None else raw
+    return frozenset(part.strip() for part in source.split(",") if part.strip())
+
+
+def _grep_ignored_parts() -> frozenset[str]:
+    return _csv_env_values(GREP_IGNORED_PARTS_ENV, DEFAULT_GREP_IGNORED_PARTS)
+
+
+def _grep_ignored_suffixes() -> frozenset[str]:
+    return _csv_env_values(GREP_IGNORED_SUFFIXES_ENV, DEFAULT_GREP_IGNORED_SUFFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +385,8 @@ def _grep_result(
             break
         if not child.is_file():
             continue
+        if _is_grep_ignored_path(child):
+            continue
         if not fnmatch.fnmatch(child.name, file_pattern):
             continue
         try:
@@ -382,6 +404,8 @@ def _grep_result(
         try:
             rel = child.relative_to(workspace_root).as_posix()
         except ValueError:
+            continue
+        if is_protected_relative_path(rel) is not None:
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             # Truncate the line BEFORE regex so a greedy pattern can't
@@ -404,6 +428,12 @@ def _grep_result(
         "truncated": len(matches) >= cap,
         "total_byte_budget_exhausted": total_budget_exhausted,
     }
+
+
+def _is_grep_ignored_path(path: Path) -> bool:
+    ignored_parts = _grep_ignored_parts()
+    ignored_suffixes = _grep_ignored_suffixes()
+    return any(part in ignored_parts for part in path.parts) or path.suffix in ignored_suffixes
 
 
 def _directory_tree_result(

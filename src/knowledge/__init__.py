@@ -21,6 +21,16 @@ from src.knowledge.runtime_context import (
     RuntimeContextSnapshot,
     build_runtime_context_fragment,
 )
+from src.knowledge.workspace_instructions import (
+    MAX_WORKSPACE_INSTRUCTIONS_BYTES,
+    WORKSPACE_INSTRUCTIONS_FILENAME,
+    WORKSPACE_INSTRUCTIONS_FRAGMENT_NAME,
+    WORKSPACE_INSTRUCTIONS_PRIORITY,
+    WORKSPACE_INSTRUCTIONS_VISIBILITY_SCOPE,
+    WorkspaceInstructionsCollector,
+    WorkspaceInstructionsSnapshot,
+    build_workspace_instructions_fragment,
+)
 
 __all__ = [
     "ContextAssembler",
@@ -41,4 +51,12 @@ __all__ = [
     "CAPABILITY_AWARENESS_PRIORITY",
     "CAPABILITY_AWARENESS_VISIBILITY_SCOPE",
     "CAPABILITY_AWARENESS_POSTURE_TEXT",
+    "WorkspaceInstructionsCollector",
+    "WorkspaceInstructionsSnapshot",
+    "build_workspace_instructions_fragment",
+    "WORKSPACE_INSTRUCTIONS_FRAGMENT_NAME",
+    "WORKSPACE_INSTRUCTIONS_PRIORITY",
+    "WORKSPACE_INSTRUCTIONS_VISIBILITY_SCOPE",
+    "WORKSPACE_INSTRUCTIONS_FILENAME",
+    "MAX_WORKSPACE_INSTRUCTIONS_BYTES",
 ]

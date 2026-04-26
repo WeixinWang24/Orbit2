@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.capability.models import (
+    CapabilityMetadata,
     CapabilityResult,
     GovernanceOutcome,
     ToolDefinition,
@@ -41,6 +42,9 @@ class CapabilityBoundary:
 
     def list_definitions(self) -> list[ToolDefinition]:
         return self._registry.list_definitions()
+
+    def list_metadata(self) -> list[CapabilityMetadata]:
+        return self._registry.list_metadata()
 
     def execute(
         self,
