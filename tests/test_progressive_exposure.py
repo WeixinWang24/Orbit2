@@ -22,7 +22,7 @@ from src.capability.discovery import (
     REVEAL_REQUEST_MARKER,
     ListAvailableToolsTool,
 )
-from src.capability.models import ToolDefinition, ToolResult
+from src.capability.models import CapabilityLayer, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
     ApplyExactHunkTool,
@@ -71,11 +71,13 @@ class TestToolMetadataDefaults:
         t = _Stub()
         assert t.reveal_group == "default"
         assert t.default_exposed is True
+        assert t.capability_layer == CapabilityLayer.RAW_PRIMITIVE
 
     def test_native_read_is_default_exposed(self, tmp_path: Path) -> None:
         t = ReadFileTool(tmp_path)
         assert t.reveal_group == "native_fs_read"
         assert t.default_exposed is True
+        assert t.capability_layer == CapabilityLayer.RAW_PRIMITIVE
 
     @pytest.mark.parametrize("cls", [
         WriteFileTool, ReplaceInFileTool, ReplaceAllInFileTool,
@@ -87,6 +89,7 @@ class TestToolMetadataDefaults:
         t = cls(tmp_path)
         assert t.reveal_group == "native_fs_mutate"
         assert t.default_exposed is False
+        assert t.capability_layer == CapabilityLayer.RAW_PRIMITIVE
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +112,7 @@ class TestDiscoveryTool:
         assert disco is not None
         assert disco.reveal_group == DISCOVERY_REVEAL_GROUP
         assert disco.default_exposed is True
+        assert disco.capability_layer == CapabilityLayer.TOOLCHAIN
 
     def test_summary_lists_exposed_and_groups(self, tmp_path: Path) -> None:
         r = self._registry_with_mix(tmp_path)
@@ -121,7 +125,22 @@ class TestDiscoveryTool:
         mutate = [g for g in summary["reveal_groups"] if g["name"] == "native_fs_mutate"]
         assert len(mutate) == 1
         assert mutate[0]["tool_count"] == 2
+        assert mutate[0]["layers"] == ["raw_primitive"]
+        assert summary["capability_layers"]["total"] == {
+            "raw_primitive": 3,
+            "toolchain": 1,
+        }
+        assert summary["capability_layers"]["exposed"] == {
+            "raw_primitive": 1,
+            "toolchain": 1,
+        }
         assert "hint" in summary
+
+    def test_group_descriptions_cover_structured_scope(self) -> None:
+        from src.capability.discovery import GROUP_DESCRIPTIONS
+
+        assert "scoped grep" in GROUP_DESCRIPTIONS["mcp_structured_filesystem"]
+        assert "revision file regions" in GROUP_DESCRIPTIONS["mcp_structured_git"]
 
     def test_reveal_request_sets_marker(self, tmp_path: Path) -> None:
         r = self._registry_with_mix(tmp_path)
@@ -619,8 +638,110 @@ class TestMcpRevealGroupConsistency:
             w = self._wrapper(server, "run_x", side_effect="safe")
             assert w.reveal_group == "mcp_diagnostics"
 
+    def test_structured_filesystem_family(self, tmp_path: Path) -> None:
+        assert (
+            self._wrapper("structured_filesystem", "read_file_region", side_effect="safe").reveal_group
+            == "mcp_structured_filesystem"
+        )
+
+    def test_structured_git_family(self, tmp_path: Path) -> None:
+        assert (
+            self._wrapper("structured_git", "read_diff_hunk", side_effect="safe").reveal_group
+            == "mcp_structured_git"
+        )
+
     def test_unknown_server_falls_back_to_mcp_prefix(self, tmp_path: Path) -> None:
         assert self._wrapper("foosvc", "do_thing", side_effect="safe").reveal_group == "mcp_foosvc"
+
+
+class TestMcpCapabilityLayerClassification:
+    def _wrapper(
+        self, server: str, tool: str, *, side_effect: str = "safe"
+    ):
+        from src.capability.mcp import McpToolDescriptor, McpToolWrapper
+        from src.capability.mcp.governance import McpGovernanceMetadata
+
+        class _Stub:
+            def list_tools(self): return []
+            def call_tool(self, *a, **k): raise NotImplementedError
+
+        g: McpGovernanceMetadata = {
+            "side_effect_class": side_effect,
+            "requires_approval": side_effect == "write",
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "none",
+        }
+        return McpToolWrapper(
+            descriptor=McpToolDescriptor(
+                server_name=server, original_name=tool,
+                orbit_tool_name=f"mcp__{server}__{tool}",
+                description="", input_schema={"type": "object", "properties": {}},
+            ),
+            client=_Stub(),
+            governance=g,
+        )
+
+    @pytest.mark.parametrize("tool", ["read_file", "grep", "directory_tree"])
+    def test_filesystem_tools_are_raw_primitives(self, tool: str) -> None:
+        assert self._wrapper("filesystem", tool).capability_layer == CapabilityLayer.RAW_PRIMITIVE
+
+    @pytest.mark.parametrize("tool", ["git_diff", "git_show"])
+    def test_raw_git_read_tools_are_raw_primitives(self, tool: str) -> None:
+        assert self._wrapper("git", tool).capability_layer == CapabilityLayer.RAW_PRIMITIVE
+
+    @pytest.mark.parametrize("tool", ["git_status", "git_changed_files", "git_log"])
+    def test_git_orientation_tools_are_toolchain_candidates(self, tool: str) -> None:
+        assert self._wrapper("git", tool).capability_layer == CapabilityLayer.TOOLCHAIN
+
+    @pytest.mark.parametrize(
+        ("server", "tool"),
+        [
+            ("pytest", "run_pytest_structured"),
+            ("ruff", "run_ruff_structured"),
+            ("mypy", "run_mypy_structured"),
+        ],
+    )
+    def test_diagnostic_structured_tools_are_toolchains(
+        self, server: str, tool: str
+    ) -> None:
+        assert self._wrapper(server, tool).capability_layer == CapabilityLayer.TOOLCHAIN
+
+    @pytest.mark.parametrize("tool", ["read_file_region", "grep_scoped"])
+    def test_structured_filesystem_tools_are_structured_primitives(self, tool: str) -> None:
+        assert (
+            self._wrapper("structured_filesystem", tool).capability_layer
+            == CapabilityLayer.STRUCTURED_PRIMITIVE
+        )
+
+    @pytest.mark.parametrize("tool", ["read_diff_hunk", "read_git_show_region"])
+    def test_structured_git_tools_are_structured_primitives(self, tool: str) -> None:
+        assert (
+            self._wrapper("structured_git", tool).capability_layer
+            == CapabilityLayer.STRUCTURED_PRIMITIVE
+        )
+
+    @pytest.mark.parametrize(
+        "tool",
+        ["obsidian_search_notes", "obsidian_get_note_links", "obsidian_get_vault_metadata"],
+    )
+    def test_obsidian_navigation_tools_are_toolchains(self, tool: str) -> None:
+        assert self._wrapper("obsidian", tool).capability_layer == CapabilityLayer.TOOLCHAIN
+
+    @pytest.mark.parametrize("tool", ["obsidian_read_note", "obsidian_read_notes"])
+    def test_obsidian_raw_note_reads_remain_raw_primitives(self, tool: str) -> None:
+        assert self._wrapper("obsidian", tool).capability_layer == CapabilityLayer.RAW_PRIMITIVE
+
+    def test_mcp_layer_classifier_is_exported_from_mcp_module(self) -> None:
+        from src.capability.mcp import classify_mcp_capability_layer
+
+        assert classify_mcp_capability_layer(
+            server_name="git",
+            original_tool_name="git_status",
+        ) == CapabilityLayer.TOOLCHAIN
+        assert classify_mcp_capability_layer(
+            server_name="filesystem",
+            original_tool_name="read_file",
+        ) == CapabilityLayer.RAW_PRIMITIVE
 
 
 class TestDefaultBoundaryExposureMinimum:

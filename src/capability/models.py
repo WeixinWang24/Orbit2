@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,24 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict = Field(default_factory=dict)
+
+
+class CapabilityLayer(str, Enum):
+    RAW_PRIMITIVE = "raw_primitive"
+    STRUCTURED_PRIMITIVE = "structured_primitive"
+    TOOLCHAIN = "toolchain"
+    WORKFLOW = "workflow"
+
+
+class CapabilityMetadata(BaseModel):
+    name: str
+    description: str
+    reveal_group: str
+    default_exposed: bool
+    side_effect_class: str
+    requires_approval: bool
+    environment_check_kind: str
+    capability_layer: CapabilityLayer
 
 
 class ToolResult(BaseModel):

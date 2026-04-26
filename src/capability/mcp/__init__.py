@@ -13,10 +13,16 @@ from src.capability.mcp.governance import (
     PROCESS_WRITE_TOOLS,
     PYTEST_READ_TOOLS,
     RUFF_READ_TOOLS,
+    STRUCTURED_FILESYSTEM_READ_TOOLS,
+    STRUCTURED_GIT_READ_TOOLS,
     McpGovernanceMetadata,
     filesystem_server_allowed_root,
     resolve_filesystem_mcp_target_path,
     resolve_mcp_tool_governance,
+)
+from src.capability.mcp.layers import (
+    OBSIDIAN_TOOLCHAIN_TOOLS,
+    classify_mcp_capability_layer,
 )
 from src.capability.mcp.models import McpClientBootstrap, McpToolDescriptor
 from src.capability.mcp.wrapper import FilesystemMcpToolWrapper, McpToolWrapper
@@ -41,7 +47,11 @@ __all__ = [
     "PYTEST_READ_TOOLS",
     "RUFF_READ_TOOLS",
     "MYPY_READ_TOOLS",
+    "STRUCTURED_FILESYSTEM_READ_TOOLS",
+    "STRUCTURED_GIT_READ_TOOLS",
     "OBSIDIAN_READ_TOOLS",
+    "OBSIDIAN_TOOLCHAIN_TOOLS",
+    "classify_mcp_capability_layer",
     "resolve_mcp_tool_governance",
     "filesystem_server_allowed_root",
     "resolve_filesystem_mcp_target_path",

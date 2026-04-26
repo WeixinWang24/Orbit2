@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import time
 from pathlib import Path
 
+import httpx
+import openai
 import pytest
 
 from src.core.runtime.models import (
@@ -96,14 +99,30 @@ class FakeCompletions:
         return self._response
 
 
+class RaisingCompletions:
+    def create(self, **kwargs):
+        request = httpx.Request("POST", "http://localhost:8000/v1/chat/completions")
+        raise openai.APIConnectionError(request=request)
+
+
 class FakeChat:
     def __init__(self, response):
         self.completions = FakeCompletions(response)
 
 
+class RaisingChat:
+    def __init__(self):
+        self.completions = RaisingCompletions()
+
+
 class FakeOpenAIClient:
     def __init__(self, response):
         self.chat = FakeChat(response)
+
+
+class RaisingOpenAIClient:
+    def __init__(self):
+        self.chat = RaisingChat()
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +207,50 @@ def test_openai_compatible_plan_from_messages_returns_final_text(sample_request:
     assert plan.model == "demo-model"
 
 
+def test_openai_compatible_backend_accepts_basic_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_response = FakeResponse(choices=[])
+    fake_client = FakeOpenAIClient(fake_response)
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **kwargs: captured_kwargs.update(kwargs) or fake_client,
+    )
+
+    OpenAICompatibleBackend(
+        OpenAICompatibleConfig(
+            model="demo-model",
+            base_url="http://10.204.18.32:8080/v1",
+            basic_auth_username="alice",
+            basic_auth_password="secret",
+        )
+    )
+
+    token = base64.b64encode(b"alice:secret").decode("ascii")
+    assert captured_kwargs["base_url"] == "http://10.204.18.32:8080/v1"
+    assert captured_kwargs["api_key"] == "EMPTY"
+    assert captured_kwargs["default_headers"] == {"Authorization": f"Basic {token}"}
+
+
+def test_openai_compatible_connection_error_returns_plan(
+    sample_request: TurnRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: RaisingOpenAIClient())
+    backend = OpenAICompatibleBackend(
+        OpenAICompatibleConfig(model="demo-model", base_url="http://localhost:8000/v1")
+    )
+
+    plan = backend.plan_from_messages(sample_request)
+
+    assert plan.plan_label == "openai-compatible-provider-error"
+    assert plan.model == "demo-model"
+    assert "APIConnectionError" in (plan.final_text or "")
+    assert "base_url=http://localhost:8000/v1" in (plan.final_text or "")
+    assert plan.metadata["base_url"] == "http://localhost:8000/v1"
+
+
 def test_openai_compatible_normalize_response_handles_empty_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_response = FakeResponse(choices=[], model="fallback-model", usage=None)
     fake_client = FakeOpenAIClient(fake_response)
@@ -248,7 +311,7 @@ def test_codex_backend_builds_request_parts(sample_request: TurnRequest, tmp_pat
         encoding="utf-8",
     )
     backend = CodexBackend(
-        CodexConfig(model="gpt-5.4", credential_path=str(credential_path)),
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
         repo_root=tmp_path,
     )
     assert backend._build_request_url() == "https://chatgpt.com/backend-api/codex/responses"
@@ -266,7 +329,7 @@ def test_codex_backend_normalizes_streamed_text(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     backend = CodexBackend(
-        CodexConfig(credential_path=str(credential_path)),
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
         repo_root=tmp_path,
     )
     events = [
@@ -296,7 +359,7 @@ def test_codex_backend_normalizes_error_event(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     backend = CodexBackend(
-        CodexConfig(credential_path=str(credential_path)),
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
         repo_root=tmp_path,
     )
     events = [CodexSSEEvent(payload={"type": "error", "message": "bad auth"}, raw_line="data: ...")]
@@ -320,7 +383,7 @@ def test_codex_backend_plan_from_messages_handles_transport_failure(
         encoding="utf-8",
     )
     backend = CodexBackend(
-        CodexConfig(model="gpt-5.4", credential_path=str(credential_path)),
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
         repo_root=tmp_path,
     )
 

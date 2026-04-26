@@ -167,6 +167,20 @@ MYPY_READ_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# Structured filesystem family — L1 evidence-bearing read primitives.
+STRUCTURED_FILESYSTEM_READ_TOOLS: frozenset[str] = frozenset({
+    "read_file_region",
+    "grep_scoped",
+})
+
+
+# Structured git family — L1 evidence-bearing read primitives.
+STRUCTURED_GIT_READ_TOOLS: frozenset[str] = frozenset({
+    "read_diff_hunk",
+    "read_git_show_region",
+})
+
+
 # Obsidian family (Handoff 17) — vault read surfaces. All safe/no-approval.
 # Server implementation NOT migrated this slice (requires vault integration).
 OBSIDIAN_READ_TOOLS: frozenset[str] = frozenset({
@@ -267,6 +281,22 @@ def resolve_mcp_tool_governance(
         }
 
     if server == "mypy" and tool in MYPY_READ_TOOLS:
+        return {
+            "side_effect_class": "safe",
+            "requires_approval": False,
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "none",
+        }
+
+    if server == "structured_filesystem" and tool in STRUCTURED_FILESYSTEM_READ_TOOLS:
+        return {
+            "side_effect_class": "safe",
+            "requires_approval": False,
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "path_exists",
+        }
+
+    if server == "structured_git" and tool in STRUCTURED_GIT_READ_TOOLS:
         return {
             "side_effect_class": "safe",
             "requires_approval": False,

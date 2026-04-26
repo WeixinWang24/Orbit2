@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from src.capability.models import ToolDefinition, ToolResult
+from src.capability.models import CapabilityLayer, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools.base import Tool
 from src.governance.disclosure import (
@@ -53,6 +53,9 @@ GROUP_DESCRIPTIONS: dict[str, str] = {
     "mcp_git_read": "MCP git read tools (status / diff / log).",
     "mcp_git_mutate": "MCP git mutations (add / commit).",
     "mcp_diagnostics": "MCP diagnostics (pytest / ruff / mypy).",
+    "mcp_structured_filesystem": "MCP structured filesystem evidence tools (bounded file regions and scoped grep).",
+    "mcp_structured_git": "MCP structured git evidence tools (bounded diff hunks and revision file regions).",
+    "mcp_obsidian": "MCP Obsidian vault read tools (notes / links / tags).",
 }
 
 
@@ -158,6 +161,10 @@ class ListAvailableToolsTool(Tool):
     @property
     def side_effect_class(self) -> str:
         return "safe"
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        return CapabilityLayer.TOOLCHAIN
 
     @property
     def requires_approval(self) -> bool:
@@ -287,19 +294,26 @@ class ListAvailableToolsTool(Tool):
 
         exposed: list[str] = []
         hidden_by_group: dict[str, list[str]] = {}
+        layer_counts: dict[str, int] = {}
+        exposed_layer_counts: dict[str, int] = {}
+        hidden_layer_counts: dict[str, int] = {}
         for name in self._registry.list_names():
             tool = self._registry.get(name)
             if tool is None:  # defensive; should not happen with our registry
                 continue
             group = tool.reveal_group
+            layer = tool.capability_layer.value
+            layer_counts[layer] = layer_counts.get(layer, 0) + 1
             if active_groups is not None:
                 is_exposed_now = group in active_groups
             else:
                 is_exposed_now = tool.default_exposed
             if is_exposed_now:
                 exposed.append(name)
+                exposed_layer_counts[layer] = exposed_layer_counts.get(layer, 0) + 1
             else:
                 hidden_by_group.setdefault(group, []).append(name)
+                hidden_layer_counts[layer] = hidden_layer_counts.get(layer, 0) + 1
 
         reveal_groups = [
             {
@@ -309,6 +323,11 @@ class ListAvailableToolsTool(Tool):
                 ),
                 "tool_count": len(tools),
                 "sample_tools": sorted(tools)[:4],
+                "layers": sorted({
+                    self._registry.get(tool_name).capability_layer.value
+                    for tool_name in tools
+                    if self._registry.get(tool_name) is not None
+                }),
             }
             for group, tools in sorted(hidden_by_group.items())
         ]
@@ -318,6 +337,11 @@ class ListAvailableToolsTool(Tool):
             "exposed_tool_count": len(exposed),
             "active_reveal_groups": sorted(active_groups) if active_groups is not None else None,
             "reveal_groups": reveal_groups,
+            "capability_layers": {
+                "total": dict(sorted(layer_counts.items())),
+                "exposed": dict(sorted(exposed_layer_counts.items())),
+                "hidden": dict(sorted(hidden_layer_counts.items())),
+            },
             "hidden_tool_count": sum(len(v) for v in hidden_by_group.values()),
             "hint": (
                 "Call this tool with `reveal=<group_name>` to unlock a "

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from src.capability.models import ToolDefinition, ToolResult
+from src.capability.models import CapabilityLayer, ToolDefinition, ToolResult
 
 
 class Tool(ABC):
@@ -57,6 +57,11 @@ class Tool(ABC):
         staged exposure means setting this to `False`.
         """
         return True
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        """ADR-0013 architectural capability layer."""
+        return CapabilityLayer.RAW_PRIMITIVE
 
     @abstractmethod
     def execute(self, **kwargs: Any) -> ToolResult: ...

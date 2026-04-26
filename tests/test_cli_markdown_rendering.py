@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 
-from src.operation.cli.markdown import render_markdown_for_terminal
+from src.operation.cli.markdown import (
+    render_markdown_for_terminal,
+    wrap_ansi_text_for_terminal,
+)
+from src.operation.cli.style import RESET
 
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -52,6 +56,24 @@ class TestFencedCodeBlocks:
         assert "first" in stripped
         assert "second" in stripped
         assert "middle" in stripped
+
+
+class TestAnsiAwareWrapping:
+    def test_wraps_ascii_by_visible_width(self) -> None:
+        assert wrap_ansi_text_for_terminal("abcdef", 4) == "abcd\nef"
+
+    def test_wraps_cjk_by_visible_width(self) -> None:
+        assert wrap_ansi_text_for_terminal("你好世界", 4) == "你好\n世界"
+
+    def test_ansi_sequences_do_not_count_toward_width(self) -> None:
+        src = "\x1b[95mabcd\x1b[0mef"
+        out = wrap_ansi_text_for_terminal(src, 4)
+        assert _strip_ansi(out) == "abcd\nef"
+        assert "\x1b[95m" in out
+        assert "\x1b[0m" in out
+
+    def test_existing_newlines_reset_width(self) -> None:
+        assert wrap_ansi_text_for_terminal("abc\ndefgh", 4) == "abc\ndefg\nh"
 
 
 class TestInlineFormatting:
@@ -307,3 +329,79 @@ class TestFencedCoexistence:
         assert "(mermaid)" in stripped
         assert "x = 1" in stripped
         assert "graph" in stripped
+
+
+class TestBaseColorPreservation:
+    """Regression: Handoff 30.
+
+    When the rendered output is embedded inside an outer colored region
+    (the CLI harness wraps the assistant body in `CONTENT_ASSISTANT …
+    RESET`), every internal `RESET` that closes an inline span must
+    also re-apply the outer color, otherwise ordinary body text
+    following the first styled span drops to terminal default (the
+    observed "assistant text reverts to white" bug).
+    """
+
+    BASE = "\x1b[95m"  # sentinel base color, stand-in for CONTENT_ASSISTANT
+
+    def test_default_base_color_preserves_old_behavior(self) -> None:
+        # Without an explicit base_color the renderer must keep emitting
+        # a bare RESET — no stray sentinel bytes.
+        src = "this is **important** text"
+        out = render_markdown_for_terminal(src)
+        assert self.BASE not in out
+
+    def test_plain_text_never_injects_base_color(self) -> None:
+        # No styled spans -> no internal RESET -> nothing to restore.
+        src = "no markdown here at all."
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert out == src
+        assert self.BASE not in out
+
+    def test_bold_close_restores_base_color(self) -> None:
+        src = "prefix **bold body** suffix"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"{RESET}{self.BASE} suffix" in out
+
+    def test_italic_close_restores_base_color(self) -> None:
+        src = "prefix *subtle* suffix"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"{RESET}{self.BASE} suffix" in out
+
+    def test_inline_code_close_restores_base_color(self) -> None:
+        src = "call `run()` first"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"{RESET}{self.BASE} first" in out
+
+    def test_heading_close_restores_base_color_before_next_line(self) -> None:
+        src = "### heading\nbody text"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"{RESET}{self.BASE}\nbody text" in out
+
+    def test_bullet_close_restores_base_color_before_body(self) -> None:
+        src = "- item body"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"\u2022{RESET}{self.BASE} item body" in out
+
+    def test_mixed_markdown_trailing_plain_text_stays_in_base_color(self) -> None:
+        # Canonical Handoff-30 failure shape: bullet + bold + trailing
+        # Chinese prose. The trailing prose after the bold close must
+        # be preceded by the base-color restore.
+        src = "- **list_available_tools**：查看/申请解锁工具组"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        assert f"{RESET}{self.BASE}：查看/申请解锁工具组" in out
+
+    def test_fenced_block_close_restores_base_color(self) -> None:
+        # Between fenced blocks the outer color must be active too, so
+        # surrounding prose is not painted terminal-default.
+        src = "before\n```\nhello\n```\nafter"
+        out = render_markdown_for_terminal(src, base_color=self.BASE)
+        # Fenced body lines close with RESET+base; between the block
+        # border and surrounding prose the base color is always restored
+        # by every internal close.
+        assert f"{RESET}{self.BASE}" in out
+        # Stripping ANSI must still give the expected plain text.
+        stripped = _strip_ansi(out)
+        assert "before" in stripped
+        assert "hello" in stripped
+        assert "after" in stripped

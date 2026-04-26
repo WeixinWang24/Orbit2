@@ -13,7 +13,14 @@ from src.capability.mcp import (
     StdioMcpClient,
     attach_mcp_server,
 )
-from src.capability.models import CapabilityResult, GovernanceOutcome, ToolDefinition, ToolResult
+from src.capability.models import (
+    CapabilityLayer,
+    CapabilityMetadata,
+    CapabilityResult,
+    GovernanceOutcome,
+    ToolDefinition,
+    ToolResult,
+)
 from src.capability.registry import CapabilityRegistry
 from src.capability.tools import (
     ApplyExactHunkTool,
@@ -27,6 +34,8 @@ from src.capability.tools import (
 
 __all__ = [
     "ToolDefinition",
+    "CapabilityLayer",
+    "CapabilityMetadata",
     "ToolResult",
     "GovernanceOutcome",
     "CapabilityResult",

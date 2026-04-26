@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
-from src.operation.cli.harness import _run_interactive, _show_history, main
+from src.operation.cli.harness import (
+    _build_backend,
+    _run_interactive,
+    _show_history,
+    main,
+)
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\[\?[0-9]+[hl]|\x1b\[[0-9]*[A-Za-z]")
@@ -90,6 +95,42 @@ def nonstreaming_manager(tmp_path: Path) -> SessionManager:
 # ---------------------------------------------------------------------------
 # 1. CLI delegates to SessionManager
 # ---------------------------------------------------------------------------
+
+
+def test_build_vllm_backend_reads_runtime_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_client = object()
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **kwargs: captured_kwargs.update(kwargs) or fake_client,
+    )
+    config_dir = tmp_path / ".runtime"
+    config_dir.mkdir()
+    (config_dir / "agent_runtime.toml").write_text(
+        "\n".join([
+            "[vllm]",
+            "base_url_env = 'ORBIT2_TEST_VLLM_BASE_URL'",
+            "basic_auth_username_env = 'ORBIT2_TEST_VLLM_USERNAME'",
+            "basic_auth_password_env = 'ORBIT2_TEST_VLLM_PASSWORD'",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "ORBIT2_TEST_VLLM_BASE_URL",
+        "http://10.204.18.32:8080/v1/chat/completions",
+    )
+    monkeypatch.setenv("ORBIT2_TEST_VLLM_USERNAME", "alice")
+    monkeypatch.setenv("ORBIT2_TEST_VLLM_PASSWORD", "secret")
+
+    backend = _build_backend("vllm", "Qwopus-GLM-18B", tmp_path)
+
+    assert backend.backend_name == "openai-compatible"
+    assert captured_kwargs["base_url"] == "http://10.204.18.32:8080/v1"
+    assert captured_kwargs["default_headers"]["Authorization"].startswith("Basic ")
+
 
 def test_cli_delegates_to_session_manager(streaming_manager: SessionManager, capsys) -> None:
     session = streaming_manager.create_session(system_prompt="test")
@@ -255,6 +296,43 @@ def test_nonstreaming_fallback_applies_markdown_render(tmp_path: Path, capsys) -
     assert "\u2022 bold body" in plain
 
 
+def test_tty_nonstreaming_wraps_long_message_before_terminal_autowrap(
+    tmp_path: Path, capsys,
+) -> None:
+    class LongNonStreamingBackend(ExecutionBackend):
+        @property
+        def backend_name(self) -> str:
+            return "long-nonstream-dummy"
+
+        def plan_from_messages(
+            self,
+            request: TurnRequest,
+            *,
+            on_partial_text: Callable[[str], None] | None = None,
+        ) -> ExecutionPlan:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="long-nonstream-dummy-final",
+                final_text="abcdef你好世界",
+                model="dummy-model",
+            )
+
+    store = SQLiteSessionStore(tmp_path / "test.db")
+    mgr = SessionManager(backend=LongNonStreamingBackend(), store=store)
+    session = mgr.create_session()
+
+    import sys as _sys
+
+    inputs = iter(["hi", "/quit"])
+    with patch("builtins.input", side_effect=inputs), patch.object(
+        _sys.stdout, "isatty", return_value=True,
+    ), patch("src.operation.cli.harness._term_width", return_value=8):
+        _run_interactive(mgr, session.session_id)
+
+    plain = _strip_ansi(capsys.readouterr().out)
+    assert "abcdef你\n好世界" in plain
+
+
 class _MarkdownStreamingBackend(ExecutionBackend):
     """Backend that streams a markdown-rich response character by character."""
 
@@ -349,6 +427,50 @@ def test_tty_streaming_visible_then_erased_then_rendered(
     # (no rendered-then-re-rendered artifacts).
     assert plain_post.count("bold body") == 1
     assert plain_post.count("heading") == 1
+
+
+def test_tty_rendered_body_preserves_assistant_color_after_styled_spans(
+    tmp_path: Path, capsys,
+) -> None:
+    """Regression: Handoff 30.
+
+    In the post-erase rendered region, each internal `RESET` that closes
+    a markdown span (heading / bullet / bold / italic / inline-code)
+    must be followed immediately by `CONTENT_ASSISTANT` so ordinary
+    body text after the span stays in the assistant purple instead of
+    dropping to terminal default. The streaming backend produces
+    `"### heading\\n- **bold** body"` — after the `**bold**` close, the
+    trailing ` body` must sit inside a re-applied `CONTENT_ASSISTANT`
+    region.
+    """
+    from src.operation.cli.style import CONTENT_ASSISTANT, RESET
+
+    store = SQLiteSessionStore(tmp_path / "test.db")
+    mgr = SessionManager(backend=_MarkdownStreamingBackend(), store=store)
+    session = mgr.create_session()
+
+    import re as _re
+    import sys as _sys
+
+    inputs = iter(["hi", "/quit"])
+    with patch("builtins.input", side_effect=inputs), patch.object(
+        _sys.stdout, "isatty", return_value=True,
+    ):
+        _run_interactive(mgr, session.session_id)
+
+    out = capsys.readouterr().out
+
+    erase_match = _re.search(r"\x1b\[\d+F\x1b\[J|\r\x1b\[K", out)
+    assert erase_match is not None
+    post_erase = out[erase_match.end():]
+
+    # The `**bold**` close in the renderer becomes `RESET + base_color`
+    # when base_color=CONTENT_ASSISTANT. The trailing ` body` after the
+    # close must be preceded by the restore pair.
+    assert f"{RESET}{CONTENT_ASSISTANT} body" in post_erase
+    # The heading close must also restore assistant color before the
+    # newline leading into the bullet line.
+    assert f"{RESET}{CONTENT_ASSISTANT}\n" in post_erase
 
 
 # ---------------------------------------------------------------------------
