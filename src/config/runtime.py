@@ -16,6 +16,7 @@ DEFAULT_VLLM_USERNAME_ENV = "ORBIT2_VLLM_USERNAME"
 DEFAULT_VLLM_PASSWORD_ENV = "ORBIT2_VLLM_PASSWORD"
 STORE_SUBDIR = ".runtime"
 DEFAULT_DB_NAME = "sessions.db"
+DEFAULT_CODE_INTEL_DB_NAME = "code_intel.db"
 AGENT_RUNTIME_CONFIG_NAME = "agent_runtime.toml"
 MAX_TOOL_TURNS = 10
 
@@ -69,6 +70,13 @@ def default_db_path(runtime_root: Path | RuntimeRoot) -> Path:
     store_dir = path / STORE_SUBDIR
     store_dir.mkdir(parents=True, exist_ok=True)
     return store_dir / DEFAULT_DB_NAME
+
+
+def code_intel_db_path(runtime_root: Path | RuntimeRoot) -> Path:
+    path = runtime_root.path if isinstance(runtime_root, RuntimeRoot) else runtime_root
+    store_dir = path / STORE_SUBDIR
+    store_dir.mkdir(parents=True, exist_ok=True)
+    return store_dir / DEFAULT_CODE_INTEL_DB_NAME
 
 
 def runtime_config_path(runtime_root: Path | RuntimeRoot) -> Path:

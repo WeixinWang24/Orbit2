@@ -152,6 +152,10 @@ BROWSER_WRITE_TOOLS: frozenset[str] = frozenset({
 # write `.pytest_cache`, accepted as benign for first-slice diagnostics.
 PYTEST_READ_TOOLS: frozenset[str] = frozenset({
     "run_pytest_structured",
+    "pytest_diagnose_failures",
+    "toolchain_get_run",
+    "toolchain_get_step",
+    "toolchain_read_artifact_region",
 })
 
 

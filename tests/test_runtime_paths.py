@@ -8,6 +8,7 @@ import pytest
 
 from src.config.runtime import (
     AGENT_RUNTIME_CONFIG_NAME,
+    DEFAULT_CODE_INTEL_DB_NAME,
     DEFAULT_PROVIDER_MODEL_ENV,
     DEFAULT_PROVIDER_MODEL,
     DEFAULT_VLLM_API_KEY_ENV,
@@ -20,6 +21,7 @@ from src.config.runtime import (
     RUNTIME_ROOT_ENV,
     STORE_SUBDIR,
     RuntimeRoot,
+    code_intel_db_path,
     default_db_path,
     resolve_obsidian_vault_root,
     resolve_provider_model,
@@ -132,6 +134,7 @@ class TestConfigCentralization:
             "DEFAULT_VLLM_BASE_URL_ENV",
             "DEFAULT_VLLM_PASSWORD_ENV",
             "DEFAULT_VLLM_USERNAME_ENV",
+            "DEFAULT_CODE_INTEL_DB_NAME",
             "MAX_TOOL_TURNS",
             "RuntimeRoot",
             "RuntimeEnvSetting",
@@ -142,6 +145,7 @@ class TestConfigCentralization:
             "resolve_provider_model",
             "resolve_vllm_provider_settings",
             "runtime_config_path",
+            "code_intel_db_path",
             "default_db_path",
         ):
             assert hasattr(cfg, sym), f"src.config missing re-export: {sym}"
@@ -167,6 +171,11 @@ class TestDbPath:
         assert not target.exists()
         default_db_path(target)
         assert (target / STORE_SUBDIR).is_dir()
+
+    def test_code_intel_db_path_uses_separate_runtime_db(self, tmp_path: Path) -> None:
+        db = code_intel_db_path(tmp_path)
+        assert db == tmp_path / STORE_SUBDIR / DEFAULT_CODE_INTEL_DB_NAME
+        assert db != default_db_path(tmp_path)
 
 
 class TestAgentRuntimeConfig:

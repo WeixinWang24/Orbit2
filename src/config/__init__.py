@@ -1,5 +1,6 @@
 from src.config.runtime import (
     DEFAULT_DB_NAME,
+    DEFAULT_CODE_INTEL_DB_NAME,
     DEFAULT_PROVIDER_MODEL,
     DEFAULT_PROVIDER_MODEL_ENV,
     DEFAULT_VLLM_API_KEY_ENV,
@@ -16,6 +17,7 @@ from src.config.runtime import (
     RuntimePathSetting,
     RuntimeRoot,
     VllmProviderSettings,
+    code_intel_db_path,
     default_db_path,
     resolve_obsidian_vault_root,
     resolve_provider_model,
@@ -26,6 +28,7 @@ from src.config.runtime import (
 
 __all__ = [
     "DEFAULT_DB_NAME",
+    "DEFAULT_CODE_INTEL_DB_NAME",
     "DEFAULT_PROVIDER_MODEL",
     "DEFAULT_PROVIDER_MODEL_ENV",
     "DEFAULT_VLLM_API_KEY_ENV",
@@ -42,6 +45,7 @@ __all__ = [
     "RuntimePathSetting",
     "RuntimeRoot",
     "VllmProviderSettings",
+    "code_intel_db_path",
     "default_db_path",
     "resolve_obsidian_vault_root",
     "resolve_provider_model",
