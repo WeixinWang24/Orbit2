@@ -18,6 +18,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 SERVER_NAME = "ruff"
 WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
 DEFAULT_MAX_CHARS = 12_000
@@ -116,7 +118,7 @@ def _run_ruff_structured_result(
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def run_ruff_structured(
     args: list[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,

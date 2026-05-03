@@ -9,6 +9,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 from src.capability.models import is_protected_relative_path
 from src.capability.mcp_servers.git import stdio_server as raw_git
 
@@ -375,7 +377,7 @@ def _read_git_show_region_result(
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def read_diff_hunk(
     path: str,
     hunk_index: int,
@@ -397,7 +399,7 @@ def read_diff_hunk(
     )
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def read_git_show_region(
     rev: str,
     path: str,

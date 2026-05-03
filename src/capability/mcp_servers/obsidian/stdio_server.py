@@ -13,6 +13,8 @@ from typing import Any, Iterable
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 SERVER_NAME = "obsidian"
 VAULT_ROOT_ENVS = ("ORBIT_OBSIDIAN_VAULT_ROOT", "OBSIDIAN_VAULT_PATH")
 MAX_READ_CHARS_ENV = "ORBIT_OBSIDIAN_MAX_READ_CHARS"
@@ -645,7 +647,7 @@ _configure_from_argv()
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_list_notes(
     path: str | None = None,
     recursive: bool = False,
@@ -655,7 +657,7 @@ def obsidian_list_notes(
     return _list_notes_result(path, recursive, max_results)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_read_note(
     path: str,
     include_raw_content: bool | None = False,
@@ -665,7 +667,7 @@ def obsidian_read_note(
     return _read_note_result(path, include_raw_content, max_chars)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_read_notes(
     paths: list[str],
     include_raw_content: bool | None = False,
@@ -675,7 +677,7 @@ def obsidian_read_notes(
     return _read_notes_result(paths, include_raw_content, max_chars)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_search_notes(
     query: str,
     path: str | None = None,
@@ -686,19 +688,19 @@ def obsidian_search_notes(
     return _search_notes_result(query, path, max_results, search_in)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_get_note_links(path: str) -> dict[str, Any]:
     """Return outgoing local links for a note with best-effort resolution."""
     return _get_note_links_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_get_backlinks(path: str) -> dict[str, Any]:
     """Return notes that link to the target note."""
     return _get_backlinks_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_get_unresolved_links(
     path: str | None = None,
     max_results: int | None = None,
@@ -707,7 +709,7 @@ def obsidian_get_unresolved_links(
     return _get_unresolved_links_result(path, max_results)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_get_tag_summary(
     path: str | None = None,
     max_results: int | None = None,
@@ -716,7 +718,7 @@ def obsidian_get_tag_summary(
     return _get_tag_summary_result(path, max_results)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_get_vault_metadata(
     path: str | None = None,
     include_top_level_entries: bool | None = True,
@@ -726,7 +728,7 @@ def obsidian_get_vault_metadata(
     return _get_vault_metadata_result(path, include_top_level_entries, max_entries)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def obsidian_check_availability() -> dict[str, Any]:
     """Check vault accessibility and optional Obsidian CLI presence."""
     return _check_availability_result()

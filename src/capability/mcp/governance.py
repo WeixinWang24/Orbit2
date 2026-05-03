@@ -22,7 +22,6 @@ than treating every MCP call as a generic opaque action.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -171,6 +170,33 @@ MYPY_READ_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# Code Intel family — L2 code fact indexing and query surfaces.
+CODE_INTEL_READ_TOOLS: frozenset[str] = frozenset({
+    "code_intel_repository_summary",
+    "code_intel_find_symbols",
+    "code_intel_file_context",
+    "code_intel_export_fragment_summary",
+})
+
+
+# Repo Scout family — L2 summary-first repository reconnaissance.
+REPO_SCOUT_READ_TOOLS: frozenset[str] = frozenset({
+    "repo_scout_repository_overview",
+    "repo_scout_diff_digest",
+    "repo_scout_impact_scope",
+    "repo_scout_changed_context",
+    "toolchain_get_run",
+    "toolchain_get_step",
+    "toolchain_read_artifact_region",
+})
+
+
+WORKFLOW_READ_TOOLS: frozenset[str] = frozenset({
+    "inspect_change_set_workflow",
+    "repo_recon_workflow",
+})
+
+
 # Structured filesystem family — L1 evidence-bearing read primitives.
 STRUCTURED_FILESYSTEM_READ_TOOLS: frozenset[str] = frozenset({
     "read_file_region",
@@ -285,6 +311,30 @@ def resolve_mcp_tool_governance(
         }
 
     if server == "mypy" and tool in MYPY_READ_TOOLS:
+        return {
+            "side_effect_class": "safe",
+            "requires_approval": False,
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "none",
+        }
+
+    if server == "code_intel" and tool in CODE_INTEL_READ_TOOLS:
+        return {
+            "side_effect_class": "safe",
+            "requires_approval": False,
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "none",
+        }
+
+    if server == "repo_scout" and tool in REPO_SCOUT_READ_TOOLS:
+        return {
+            "side_effect_class": "safe",
+            "requires_approval": False,
+            "governance_policy_group": "system_environment",
+            "environment_check_kind": "none",
+        }
+
+    if server == "workflow" and tool in WORKFLOW_READ_TOOLS:
         return {
             "side_effect_class": "safe",
             "requires_approval": False,

@@ -20,6 +20,18 @@ from src.governance.approval import (
 )
 
 
+def workspace_root_from_boundary(boundary: object | None) -> Path | None:
+    if boundary is None:
+        return None
+    root = getattr(boundary, "workspace_root", None)
+    if isinstance(root, Path):
+        return root
+    private_root = getattr(boundary, "_workspace_root", None)
+    if isinstance(private_root, Path):
+        return private_root
+    return None
+
+
 class CapabilityBoundary:
     def __init__(
         self,
@@ -39,6 +51,10 @@ class CapabilityBoundary:
     @property
     def registry(self) -> CapabilityRegistry:
         return self._registry
+
+    @property
+    def workspace_root(self) -> Path:
+        return self._workspace_root
 
     def list_definitions(self) -> list[ToolDefinition]:
         return self._registry.list_definitions()

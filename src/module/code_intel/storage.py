@@ -9,6 +9,7 @@ from src.module.code_intel.models import (
     CodeEdge,
     CodeFile,
     Diagnostic,
+    EdgeKind,
     IndexSummary,
     RepositoryRecord,
     Symbol,
@@ -168,6 +169,35 @@ class SQLiteCodeIntelStore:
             languages=[r["language"] for r in rows],
         )
 
+    def list_files(self, repo_id: str) -> list[CodeFile]:
+        rows = self._conn.execute(
+            "SELECT * FROM files WHERE repo_id = ? ORDER BY path",
+            (repo_id,),
+        ).fetchall()
+        return [self._row_to_file(r) for r in rows]
+
+    def list_symbols(self, repo_id: str) -> list[Symbol]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM symbols
+            WHERE repo_id = ?
+            ORDER BY file_path, start_line, qualified_name
+            """,
+            (repo_id,),
+        ).fetchall()
+        return [self._row_to_symbol(r) for r in rows]
+
+    def list_all_edges(self, repo_id: str) -> list[CodeEdge]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM edges
+            WHERE repo_id = ?
+            ORDER BY file_path, line, target_name
+            """,
+            (repo_id,),
+        ).fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
     def find_symbols(
         self,
         *,
@@ -200,6 +230,72 @@ class SQLiteCodeIntelStore:
             tuple(args),
         ).fetchall()
         return [self._row_to_symbol(r) for r in rows]
+
+    def list_edges(
+        self,
+        *,
+        repo_id: str,
+        file_paths: list[str] | None = None,
+        kind: EdgeKind | str | None = None,
+        limit: int = 200,
+    ) -> list[CodeEdge]:
+        clauses = ["repo_id = ?"]
+        args: list[object] = [repo_id]
+        if file_paths:
+            normalized = [p for p in file_paths if isinstance(p, str) and p.strip()]
+            if normalized:
+                placeholders = ", ".join("?" for _ in normalized)
+                clauses.append(f"file_path IN ({placeholders})")
+                args.extend(normalized)
+        if kind:
+            kind_value = kind.value if isinstance(kind, EdgeKind) else str(kind)
+            clauses.append("kind = ?")
+            args.append(kind_value)
+        args.append(max(1, min(limit, 1000)))
+        rows = self._conn.execute(
+            f"""
+            SELECT * FROM edges
+            WHERE {' AND '.join(clauses)}
+            ORDER BY file_path, line, target_name
+            LIMIT ?
+            """,
+            tuple(args),
+        ).fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
+    def find_edges_by_target_names(
+        self,
+        *,
+        repo_id: str,
+        target_names: list[str],
+        kind: EdgeKind | str | None = None,
+        limit: int = 200,
+    ) -> list[CodeEdge]:
+        normalized = [
+            name
+            for name in dict.fromkeys(target_names)
+            if isinstance(name, str) and name.strip()
+        ]
+        if not normalized:
+            return []
+        placeholders = ", ".join("?" for _ in normalized)
+        clauses = ["repo_id = ?", f"target_name IN ({placeholders})"]
+        args: list[object] = [repo_id, *normalized]
+        if kind:
+            kind_value = kind.value if isinstance(kind, EdgeKind) else str(kind)
+            clauses.append("kind = ?")
+            args.append(kind_value)
+        args.append(max(1, min(limit, 1000)))
+        rows = self._conn.execute(
+            f"""
+            SELECT * FROM edges
+            WHERE {' AND '.join(clauses)}
+            ORDER BY target_name, file_path, line
+            LIMIT ?
+            """,
+            tuple(args),
+        ).fetchall()
+        return [self._row_to_edge(r) for r in rows]
 
     def list_diagnostics(self, repo_id: str) -> list[Diagnostic]:
         rows = self._conn.execute(
@@ -281,6 +377,17 @@ class SQLiteCodeIntelStore:
         )
 
     @staticmethod
+    def _row_to_file(row: sqlite3.Row) -> CodeFile:
+        return CodeFile(
+            file_id=row["file_id"],
+            repo_id=row["repo_id"],
+            path=row["path"],
+            language=row["language"],
+            size_bytes=row["size_bytes"],
+            sha256=row["sha256"],
+        )
+
+    @staticmethod
     def _row_to_symbol(row: sqlite3.Row) -> Symbol:
         return Symbol(
             symbol_id=row["symbol_id"],
@@ -303,5 +410,17 @@ class SQLiteCodeIntelStore:
             file_path=row["file_path"],
             severity=row["severity"],
             message=row["message"],
+            line=row["line"],
+        )
+
+    @staticmethod
+    def _row_to_edge(row: sqlite3.Row) -> CodeEdge:
+        return CodeEdge(
+            edge_id=row["edge_id"],
+            repo_id=row["repo_id"],
+            file_path=row["file_path"],
+            kind=EdgeKind(row["kind"]),
+            source_symbol_id=row["source_symbol_id"],
+            target_name=row["target_name"],
             line=row["line"],
         )

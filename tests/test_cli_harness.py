@@ -358,33 +358,14 @@ class _MarkdownStreamingBackend(ExecutionBackend):
         )
 
 
-def test_tty_streaming_visible_then_erased_then_rendered(
+def test_tty_streaming_shows_status_then_rendered_once(
     tmp_path: Path, capsys,
 ) -> None:
-    """Regression: Handoff 25 Vio revise-2.
-
-    On a TTY the operator must see raw tokens streaming live (the
-    generation feel) AND end up with a cleanly rendered final view — no
-    dual display. The lifecycle:
-
-      1. `on_partial` writes raw deltas verbatim while tracking the
-         visual rows/columns consumed.
-      2. When the turn closes, the harness emits `\\x1b[<rows>F\\x1b[J`
-         to jump the cursor up `rows` lines to column 0 and clear to
-         end of screen, which removes the streamed region from the
-         viewport.
-      3. The rendered final text is then emitted once through the
-         markdown renderer.
-
-    The earlier DEC `\\x1b7`/`\\x1b8` save/restore approach was reverted
-    because scrolled-off save anchors produced a visible dual display.
-    Line-count erase does not depend on a saved anchor.
-    """
+    """Regression: TTY streaming must not leak raw markdown into scrollback."""
     store = SQLiteSessionStore(tmp_path / "test.db")
     mgr = SessionManager(backend=_MarkdownStreamingBackend(), store=store)
     session = mgr.create_session()
 
-    import re as _re
     import sys as _sys
 
     inputs = iter(["hi", "/quit"])
@@ -394,39 +375,22 @@ def test_tty_streaming_visible_then_erased_then_rendered(
         _run_interactive(mgr, session.session_id)
 
     out = capsys.readouterr().out
+    plain = _strip_ansi(out)
 
-    # Legacy DEC save/restore cursor sequences must never appear — they
-    # were the root cause of the dual-display bug.
     assert "\x1b7" not in out
     assert "\x1b8" not in out
+    assert "\x1b[J" not in out
+    assert "\r\x1b[K" in out
+    assert "thinking" in plain
+    assert "chars" in plain
 
-    # A CSI cursor-previous-line `\x1b[NF` OR a `\r\x1b[K` short-form
-    # erase must be present — that is the post-stream erase step.
-    assert _re.search(r"\x1b\[\d+F\x1b\[J", out) or "\r\x1b[K" in out
-
-    # The raw streamed markdown is visible in the captured byte stream
-    # before the erase, because it was written verbatim for the live
-    # streaming effect. That is expected — the terminal displays the
-    # erase as a viewport rewind.
-    pre_erase_match = _re.search(r"\x1b\[\d+F\x1b\[J|\r\x1b\[K", out)
-    assert pre_erase_match is not None
-    pre_erase = out[: pre_erase_match.start()]
-    post_erase = out[pre_erase_match.end():]
-    assert "### heading" in _strip_ansi(pre_erase)
-    assert "**bold**" in _strip_ansi(pre_erase)
-
-    # After the erase sequence the rendered form lands, with no raw
-    # markdown markers — the terminal will show only this form.
-    plain_post = _strip_ansi(post_erase)
-    assert "### heading" not in plain_post
-    assert "**bold**" not in plain_post
-    assert "- **bold** body" not in plain_post
-    assert "heading" in plain_post
-    assert "\u2022 bold body" in plain_post
-    # Rendered body text appears exactly once in the post-erase region
-    # (no rendered-then-re-rendered artifacts).
-    assert plain_post.count("bold body") == 1
-    assert plain_post.count("heading") == 1
+    assert "### heading" not in plain
+    assert "**bold**" not in plain
+    assert "- **bold** body" not in plain
+    assert "heading" in plain
+    assert "\u2022 bold body" in plain
+    assert plain.count("bold body") == 1
+    assert plain.count("heading") == 1
 
 
 def test_tty_rendered_body_preserves_assistant_color_after_styled_spans(
@@ -449,7 +413,6 @@ def test_tty_rendered_body_preserves_assistant_color_after_styled_spans(
     mgr = SessionManager(backend=_MarkdownStreamingBackend(), store=store)
     session = mgr.create_session()
 
-    import re as _re
     import sys as _sys
 
     inputs = iter(["hi", "/quit"])
@@ -460,9 +423,9 @@ def test_tty_rendered_body_preserves_assistant_color_after_styled_spans(
 
     out = capsys.readouterr().out
 
-    erase_match = _re.search(r"\x1b\[\d+F\x1b\[J|\r\x1b\[K", out)
-    assert erase_match is not None
-    post_erase = out[erase_match.end():]
+    final_clear = out.rfind("\r\x1b[K")
+    assert final_clear != -1
+    post_erase = out[final_clear + len("\r\x1b[K"):]
 
     # The `**bold**` close in the renderer becomes `RESET + base_color`
     # when base_color=CONTENT_ASSISTANT. The trailing ` body` after the
@@ -471,6 +434,45 @@ def test_tty_rendered_body_preserves_assistant_color_after_styled_spans(
     # The heading close must also restore assistant color before the
     # newline leading into the bullet line.
     assert f"{RESET}{CONTENT_ASSISTANT}\n" in post_erase
+
+
+def test_tty_status_clears_when_stream_has_no_final_text(
+    tmp_path: Path, capsys,
+) -> None:
+    class PartialOnlyBackend(ExecutionBackend):
+        @property
+        def backend_name(self) -> str:
+            return "partial-only-dummy"
+
+        def plan_from_messages(
+            self,
+            request: TurnRequest,
+            *,
+            on_partial_text: Callable[[str], None] | None = None,
+        ) -> ExecutionPlan:
+            if on_partial_text:
+                on_partial_text("working")
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="partial-only",
+                final_text=None,
+                model="dummy-model",
+            )
+
+    store = SQLiteSessionStore(tmp_path / "test.db")
+    mgr = SessionManager(backend=PartialOnlyBackend(), store=store)
+    session = mgr.create_session()
+
+    import sys as _sys
+
+    inputs = iter(["hi", "/quit"])
+    with patch("builtins.input", side_effect=inputs), patch.object(
+        _sys.stdout, "isatty", return_value=True,
+    ):
+        _run_interactive(mgr, session.session_id)
+
+    out = capsys.readouterr().out
+    assert out.rfind("\r\x1b[K") > out.rfind("thinking")
 
 
 # ---------------------------------------------------------------------------

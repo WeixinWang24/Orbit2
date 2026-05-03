@@ -365,7 +365,85 @@ def test_codex_backend_normalizes_error_event(tmp_path: Path) -> None:
     events = [CodexSSEEvent(payload={"type": "error", "message": "bad auth"}, raw_line="data: ...")]
     plan = backend._normalize_events(events)
     assert plan.plan_label == "openai-codex-error-event"
-    assert plan.final_text is None
+    assert plan.final_text == "openai-codex returned an error event: bad auth"
+
+
+def test_codex_backend_normalizes_output_item_done_message_text(tmp_path: Path) -> None:
+    credential_path = tmp_path / "cred.json"
+    credential_path.write_text(
+        '{'
+        '"access_token":"bearer-xyz",'
+        '"refresh_token":"refresh-456",'
+        f'"expires_at_epoch_ms":{int(time.time() * 1000) + 60000}'
+        '}',
+        encoding="utf-8",
+    )
+    backend = CodexBackend(
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
+        repo_root=tmp_path,
+    )
+    events = [
+        CodexSSEEvent(
+            payload={
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Hello from item"}],
+                },
+            },
+            raw_line="data: ...",
+        ),
+        CodexSSEEvent(
+            payload={
+                "type": "response.completed",
+                "response": {"id": "resp_123", "status": "completed", "model": "gpt-5.4"},
+            },
+            raw_line="data: ...",
+        ),
+    ]
+    plan = backend._normalize_events(events)
+    assert plan.plan_label == "openai-codex-final-text"
+    assert plan.final_text == "Hello from item"
+
+
+def test_codex_backend_normalizes_completed_message_text(tmp_path: Path) -> None:
+    credential_path = tmp_path / "cred.json"
+    credential_path.write_text(
+        '{'
+        '"access_token":"bearer-xyz",'
+        '"refresh_token":"refresh-456",'
+        f'"expires_at_epoch_ms":{int(time.time() * 1000) + 60000}'
+        '}',
+        encoding="utf-8",
+    )
+    backend = CodexBackend(
+        CodexConfig(model="test-codex-model", credential_path=str(credential_path)),
+        repo_root=tmp_path,
+    )
+    events = [
+        CodexSSEEvent(
+            payload={
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_123",
+                    "status": "completed",
+                    "model": "gpt-5.4",
+                    "output": [
+                        {
+                            "id": "msg_1",
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Hello completed"}],
+                        }
+                    ],
+                },
+            },
+            raw_line="data: ...",
+        ),
+    ]
+    plan = backend._normalize_events(events)
+    assert plan.plan_label == "openai-codex-final-text"
+    assert plan.final_text == "Hello completed"
 
 
 def test_codex_backend_plan_from_messages_handles_transport_failure(
@@ -393,7 +471,7 @@ def test_codex_backend_plan_from_messages_handles_transport_failure(
     monkeypatch.setattr("src.core.providers.codex.stream_sse_events", fake_stream_sse_events)
     plan = backend.plan_from_messages(sample_request)
     assert plan.plan_label == "openai-codex-transport-failure"
-    assert plan.final_text is None
+    assert plan.final_text == "openai-codex request failed: Codex HTTP error 401: unauthorized"
 
 
 # ---------------------------------------------------------------------------

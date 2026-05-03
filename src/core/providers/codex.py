@@ -115,10 +115,11 @@ class CodexBackend(ExecutionBackend):
                         accumulated_text.append(delta)
                         on_partial_text("".join(accumulated_text))
         except CodexHttpError as exc:
+            text = f"{self.backend_name} request failed: {exc}"
             normalized = ProviderNormalizedResult(
                 source_backend=self.backend_name,
                 plan_label=f"{self.backend_name}-transport-failure",
-                final_text=None,
+                final_text=text,
                 model=self._config.model,
                 metadata={"error": str(exc)},
             )
@@ -205,6 +206,9 @@ class CodexBackend(ExecutionBackend):
 
     def _normalize_events(self, events: list[CodexSSEEvent]) -> ExecutionPlan:
         text_parts: list[str] = []
+        done_text_parts: list[str] = []
+        item_done_text_parts: list[str] = []
+        response_output_text_parts: list[str] = []
         response_id: str | None = None
         status: str | None = None
         usage: dict | None = None
@@ -233,6 +237,11 @@ class CodexBackend(ExecutionBackend):
                 if isinstance(delta, str):
                     text_parts.append(delta)
 
+            elif event_type == "response.output_text.done":
+                text = p.get("text")
+                if isinstance(text, str):
+                    done_text_parts.append(text)
+
             elif event_type == "response.output_item.done":
                 # Authoritative: complete item with all fields
                 item = p.get("item", {})
@@ -248,6 +257,8 @@ class CodexBackend(ExecutionBackend):
                         arguments=args,
                         provider_item_id=item_id if item_id else None,
                     ))
+                elif item.get("type") == "message":
+                    item_done_text_parts.extend(_extract_text_from_message_item(item))
 
             elif event_type in {
                 "response.completed",
@@ -267,7 +278,9 @@ class CodexBackend(ExecutionBackend):
                     output_items = response.get("output", [])
                     if isinstance(output_items, list):
                         for item in output_items:
-                            if isinstance(item, dict) and item.get("type") == "function_call":
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "function_call":
                                 call_id = item.get("call_id") or item.get("id") or ""
                                 item_id = item.get("id", "")
                                 name = item.get("name", "")
@@ -279,6 +292,10 @@ class CodexBackend(ExecutionBackend):
                                     arguments=args,
                                     provider_item_id=item_id if item_id else None,
                                 ))
+                            elif item.get("type") == "message":
+                                response_output_text_parts.extend(
+                                    _extract_text_from_message_item(item)
+                                )
 
             elif event_type == "response.incomplete":
                 response = p.get("response")
@@ -301,7 +318,7 @@ class CodexBackend(ExecutionBackend):
                 normalized = ProviderNormalizedResult(
                     source_backend=self.backend_name,
                     plan_label=f"{self.backend_name}-error-event",
-                    final_text=None,
+                    final_text=f"{self.backend_name} returned an error event: {message}",
                     model=model or self._config.model,
                     metadata={"error": message, "event_count": len(events)},
                 )
@@ -313,7 +330,12 @@ class CodexBackend(ExecutionBackend):
 
         # If we collected function calls, return them as tool requests
         if completed_calls:
-            final_text = "".join(text_parts).strip() or None
+            final_text = _choose_text(
+                text_parts,
+                done_text_parts,
+                item_done_text_parts,
+                response_output_text_parts,
+            )
             return ExecutionPlan(
                 source_backend=self.backend_name,
                 plan_label=f"{self.backend_name}-tool-calls",
@@ -328,7 +350,12 @@ class CodexBackend(ExecutionBackend):
                 },
             )
 
-        final_text = "".join(text_parts).strip()
+        final_text = _choose_text(
+            text_parts,
+            done_text_parts,
+            item_done_text_parts,
+            response_output_text_parts,
+        )
         if final_text:
             normalized = ProviderNormalizedResult(
                 source_backend=self.backend_name,
@@ -357,3 +384,31 @@ class CodexBackend(ExecutionBackend):
             },
         )
         return self._normalize_to_plan(normalized)
+
+
+def _extract_text_from_message_item(item: dict) -> list[str]:
+    content = item.get("content")
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and part.get("type") in {
+            "output_text",
+            "text",
+            "input_text",
+        }:
+            parts.append(text)
+    return parts
+
+
+def _choose_text(*sources: list[str]) -> str | None:
+    for source in sources:
+        text = "".join(source).strip()
+        if text:
+            return text
+    return None

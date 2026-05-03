@@ -23,6 +23,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 SERVER_NAME = "process"
 WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -126,7 +128,7 @@ def _run_process_result(
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def run_process(
     command: list[str],
     cwd: str | None = None,

@@ -21,6 +21,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 SERVER_NAME = "git"
 WORKSPACE_ROOT_ENV = "ORBIT_WORKSPACE_ROOT"
 DEFAULT_MAX_DIFF_CHARS = 12_000
@@ -394,13 +396,13 @@ def _git_commit_result(message: str, *, cwd: str | None = None) -> dict[str, Any
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_status(cwd: str | None = None) -> dict[str, Any]:
     """Return branch + staged/unstaged/untracked counts and file lists."""
     return _git_status_result(cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_diff(
     cwd: str | None = None,
     path: str | None = None,
@@ -411,13 +413,13 @@ def git_diff(
     return _git_diff_result(cwd=cwd, path=path, staged=staged, max_chars=max_chars)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_log(cwd: str | None = None, limit: int = 10) -> dict[str, Any]:
     """Return recent commit summaries (sha / subject / author / date)."""
     return _git_log_result(cwd=cwd, limit=limit)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_show(
     rev: str,
     path: str | None = None,
@@ -428,37 +430,37 @@ def git_show(
     return _git_show_result(rev, path, cwd=cwd, max_chars=max_chars)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_changed_files(cwd: str | None = None) -> dict[str, Any]:
     """Return staged, unstaged, and untracked file lists (flat names only)."""
     return _git_changed_files_result(cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_restore(paths: list[str], cwd: str | None = None) -> dict[str, Any]:
     """Restore workspace files to HEAD state (discards working-tree changes)."""
     return _git_restore_result(paths, cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_unstage(paths: list[str], cwd: str | None = None) -> dict[str, Any]:
     """Unstage the given paths (move from index back to working tree)."""
     return _git_unstage_result(paths, cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_checkout_branch(branch: str, cwd: str | None = None) -> dict[str, Any]:
     """Switch to an existing branch. Refuses if the branch does not exist."""
     return _git_checkout_branch_result(branch, cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_add(paths: list[str], cwd: str | None = None) -> dict[str, Any]:
     """Stage the given workspace-relative paths."""
     return _git_add_result(paths=paths, cwd=cwd)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def git_commit(message: str, cwd: str | None = None) -> dict[str, Any]:
     """Create a commit from currently-staged changes."""
     return _git_commit_result(message, cwd=cwd)

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from src.capability.discovery import GROUP_DESCRIPTIONS as DISCOVERY_GROUP_DESCRIPTIONS
+from src.capability.tool_relationships import relationship_hints_for_tools
 from src.knowledge.models import ContextFragment
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class CapabilityAwarenessSnapshot:
     visible_reveal_groups: tuple[str, ...]
     hidden_reveal_groups: tuple[str, ...]
     hidden_group_descriptions: dict[str, str] = field(default_factory=dict)
+    relationship_hints: tuple[dict, ...] = field(default_factory=tuple)
 
 
 class CapabilityAwarenessCollector:
@@ -86,9 +88,13 @@ class CapabilityAwarenessCollector:
         all_groups = set(tool_group.values())
         if exposure_decision is not None:
             visible_groups = set(exposure_decision.active_reveal_groups)
-            visible_tool_count = len(exposure_decision.exposed_tool_names)
+            visible_tool_names = set(exposure_decision.exposed_tool_names)
+            visible_tool_count = len(visible_tool_names)
         else:
-            visible_tool_count = sum(1 for v in tool_default.values() if v)
+            visible_tool_names = {
+                n for n, is_default in tool_default.items() if is_default
+            }
+            visible_tool_count = len(visible_tool_names)
             visible_groups = {
                 tool_group[n] for n, is_default in tool_default.items() if is_default
             }
@@ -108,6 +114,7 @@ class CapabilityAwarenessCollector:
             visible_reveal_groups=visible_groups_sorted,
             hidden_reveal_groups=hidden_groups,
             hidden_group_descriptions=hidden_descriptions,
+            relationship_hints=tuple(relationship_hints_for_tools(visible_tool_names)),
         )
 
 
@@ -125,6 +132,14 @@ def build_capability_awareness_fragment(
         else:
             hidden_lines.append(f"  - {group}")
     hidden_section = "\n".join(hidden_lines) if hidden_lines else "  (none)"
+    relationship_lines = [
+        (
+            f"  - {hint['primary_tool']} {hint['relationship']} "
+            f"{', '.join(hint['related_tools'])}: {hint['reason']}"
+        )
+        for hint in snapshot.relationship_hints
+    ]
+    relationship_section = "\n".join(relationship_lines) if relationship_lines else "  (none)"
 
     content_lines = [
         _OPEN_TAG,
@@ -132,6 +147,8 @@ def build_capability_awareness_fragment(
         f"visible_reveal_groups: {visible_groups_str}",
         f"hidden_reveal_groups ({len(snapshot.hidden_reveal_groups)}):",
         hidden_section,
+        f"relationship_hints ({len(snapshot.relationship_hints)}):",
+        relationship_section,
         f"posture: {CAPABILITY_AWARENESS_POSTURE_TEXT}",
         _CLOSE_TAG,
     ]
@@ -146,5 +163,6 @@ def build_capability_awareness_fragment(
             "visible_tool_count": snapshot.visible_tool_count,
             "visible_reveal_groups": list(snapshot.visible_reveal_groups),
             "hidden_reveal_groups": list(snapshot.hidden_reveal_groups),
+            "relationship_hints": list(snapshot.relationship_hints),
         },
     )

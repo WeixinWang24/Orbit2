@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from src.capability.models import CapabilityLayer, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
+from src.capability.tool_relationships import relationship_hints_for_tools
 from src.capability.tools.base import Tool
 from src.governance.disclosure import (
     REVEAL_ALL_SAFE_REQUEST_MARKER,
@@ -53,8 +54,10 @@ GROUP_DESCRIPTIONS: dict[str, str] = {
     "mcp_git_read": "MCP git read tools (status / diff / log).",
     "mcp_git_mutate": "MCP git mutations (add / commit).",
     "mcp_diagnostics": "MCP diagnostics (pytest / ruff / mypy).",
+    "mcp_code_intel": "MCP Code Intelligence fact tools (index summaries, symbols, file context, graph fragments).",
     "mcp_structured_filesystem": "MCP structured filesystem evidence tools (bounded file regions and scoped grep).",
     "mcp_structured_git": "MCP structured git evidence tools (bounded diff hunks and revision file regions).",
+    "mcp_workflow": "MCP L3 workflows that prepare task-shaped fact packages and explicit provider decision requests.",
     "mcp_obsidian": "MCP Obsidian vault read tools (notes / links / tags).",
 }
 
@@ -337,6 +340,7 @@ class ListAvailableToolsTool(Tool):
             "exposed_tool_count": len(exposed),
             "active_reveal_groups": sorted(active_groups) if active_groups is not None else None,
             "reveal_groups": reveal_groups,
+            "relationship_hints": relationship_hints_for_tools(exposed),
             "capability_layers": {
                 "total": dict(sorted(layer_counts.items())),
                 "exposed": dict(sorted(exposed_layer_counts.items())),

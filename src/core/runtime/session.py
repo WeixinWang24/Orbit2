@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
+from src.capability.boundary import workspace_root_from_boundary
 from src.capability.discovery import DISCOVERY_TOOL_NAME
+from src.capability.mcp_servers.l3_workflow import persist_decision_response
+from src.capability.tool_relationships import overlap_notices_for_tool_names
 from src.governance.disclosure import (
     DEFAULT_DISCLOSURE_STRATEGY,
     DISCLOSURE_MARKER_KEYS,
@@ -33,6 +36,16 @@ from src.core.runtime.models import (
     make_message_id,
     make_session_id,
 )
+from src.core.runtime.workflow_decision import (
+    WORKFLOW_DECISION_TOOL_NAME,
+    WorkflowDecisionRoundtripError,
+    build_workflow_decision_tool_definition,
+    build_workflow_resume_request_from_tool_request,
+    dispatch_workflow_resume_branch,
+    project_decision_request_to_message,
+    render_workflow_branch_result,
+    workflow_decision_package_from_result,
+)
 from src.config.runtime import MAX_TOOL_TURNS
 from src.core.store.base import SessionStore
 
@@ -54,30 +67,9 @@ class SessionManager:
         self._store = store
         self._assembler = assembler or StructuredContextAssembler()
         self._capability_boundary = capability_boundary
-        # Progressive-disclosure policy. Default preserves Handoff-19
-        # single-reveal behavior. Operators who want overview ergonomics
-        # pass `BatchRevealDisclosureStrategy()`; future modes can be
-        # added as new DisclosureStrategy subclasses without touching
-        # this constructor.
         self._disclosure_strategy = disclosure_strategy or DEFAULT_DISCLOSURE_STRATEGY
-        # Initialised once at construction. `_plan_with_tools` only overwrites
-        # it on a successful exposure computation, so a later call that
-        # raises before reaching the boundary branch leaves the previous
-        # decision visible for post-mortem inspection.
         self._last_exposure_decision: ExposureDecision | None = None
-        # Assembly debug envelope captured at the most recent planning call.
-        # Consumed by run_turn when writing the subsequent assistant message
-        # so the envelope is persisted alongside the transcript turn it
-        # actually corresponds to. Purely a projection artifact — the
-        # envelope never feeds back into assembly or routing.
         self._last_assembly_envelope: AssemblyDebugEnvelope | None = None
-        # Wire the discovery tool's summary to the manager's live exposure
-        # decision so the model sees a summary consistent with the tool
-        # definitions it actually receives this turn. Lookup is best-effort:
-        # if the discovery tool isn't attached, staged exposure still works,
-        # it just falls back to the static `default_exposed` flag in the
-        # discovery summary (acceptable — there's nothing to be inconsistent
-        # with).
         self._wire_discovery_exposure_provider()
 
     def create_session(self, *, system_prompt: str | None = None) -> Session:
@@ -132,7 +124,7 @@ class SessionManager:
         )
         self._store.save_message(user_msg)
 
-        plan = self._plan_with_tools(session, session_id, on_partial_text)
+        plan = self._plan_from_transcript(session, session_id, on_partial_text)
 
         tool_loops = 0
         while plan.tool_requests and tool_loops < MAX_TOOL_TURNS:
@@ -144,12 +136,16 @@ class SessionManager:
             tool_loops += 1
             turn_index = self._next_turn_index(session_id)
 
-            # Save assistant message with tool_calls metadata
             assistant_metadata: dict = {
                 "source_backend": plan.source_backend,
                 "model": plan.model,
                 "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
             }
+            overlap_notices = overlap_notices_for_tool_names(
+                tr.tool_name for tr in plan.tool_requests
+            )
+            if overlap_notices:
+                assistant_metadata["tool_overlap_notice"] = overlap_notices
             envelope = self._envelope_metadata_snapshot()
             if envelope is not None:
                 assistant_metadata["assembly_envelope"] = envelope
@@ -163,37 +159,29 @@ class SessionManager:
                 metadata=assistant_metadata,
             ))
 
-            # Execute each tool through the governed capability boundary
+            workflow_decision_packages: list[dict[str, Any]] = []
             for tr in plan.tool_requests:
                 turn_index = self._next_turn_index(session_id)
                 result = self._capability_boundary.execute(tr, session_id=session_id)
+                workflow_decision_package = workflow_decision_package_from_result(result)
                 tool_metadata: dict = {
                     "tool_call_id": result.tool_call_id,
                     "tool_name": result.tool_name,
                     "ok": result.ok,
                     "governance_outcome": result.governance_outcome,
                 }
-                # Preserve progressive-exposure reveal requests on the
-                # TOOL-role transcript metadata so the next turn's assembler
-                # can compute a wider exposed tool subset. Only surface the
-                # marker itself; the rest of `result.data` stays with the
-                # live result.
-                #
-                # HARDENING (Handoff 19 audit HIGH-1): only the discovery tool
-                # is allowed to emit a reveal_request marker. Any other tool's
-                # `data["reveal_request"]` is ignored here so a compromised
-                # or misbehaving MCP server cannot forge cross-turn exposure
-                # by echoing the marker in its own result payload.
+                if workflow_decision_package is not None:
+                    workflow_decision_packages.append(workflow_decision_package)
+                    tool_metadata["workflow_decision"] = {
+                        "status": "waiting_for_decision",
+                        "workflow_run_id": workflow_decision_package["workflow_run_id"],
+                        "decision_id": workflow_decision_package["decision_id"],
+                        "workflow_name": workflow_decision_package["workflow_name"],
+                    }
                 if (
                     isinstance(result.data, dict)
                     and result.tool_name == DISCOVERY_TOOL_NAME
                 ):
-                    # Preserve every known disclosure marker the discovery
-                    # tool may have set: single-group reveal (Handoff 19),
-                    # batch list (Handoff 23), or the one-shot all-safe
-                    # flag. Promotion stays restricted to the discovery
-                    # tool so a non-discovery result still cannot forge
-                    # cross-turn exposure.
                     for marker_key in DISCLOSURE_MARKER_KEYS:
                         value = result.data.get(marker_key)
                         if marker_key == REVEAL_REQUEST_MARKER:
@@ -217,11 +205,16 @@ class SessionManager:
                     metadata=tool_metadata,
                 ))
 
-            # Continue with updated transcript
-            plan = self._plan_with_tools(session, session_id, on_partial_text)
+            for decision_package in workflow_decision_packages:
+                self._run_workflow_decision_message_flow(
+                    session=session,
+                    session_id=session_id,
+                    decision_request_package=decision_package,
+                    on_partial_text=on_partial_text,
+                )
 
-        # Handle MAX_TOOL_TURNS exhaustion: save the last assistant+tool_calls
-        # and a sentinel tool result so the transcript is never silently truncated
+            plan = self._plan_from_transcript(session, session_id, on_partial_text)
+
         if plan.tool_requests and tool_loops >= MAX_TOOL_TURNS:
             turn_index = self._next_turn_index(session_id)
             exhausted_metadata: dict = {
@@ -230,6 +223,11 @@ class SessionManager:
                 "tool_calls": [tr.model_dump() for tr in plan.tool_requests],
                 "tool_loop_exhausted": True,
             }
+            overlap_notices = overlap_notices_for_tool_names(
+                tr.tool_name for tr in plan.tool_requests
+            )
+            if overlap_notices:
+                exhausted_metadata["tool_overlap_notice"] = overlap_notices
             envelope = self._envelope_metadata_snapshot()
             if envelope is not None:
                 exhausted_metadata["assembly_envelope"] = envelope
@@ -282,30 +280,24 @@ class SessionManager:
 
         return plan
 
-    def _plan_with_tools(
+    def _plan_from_transcript(
         self,
         session: Session,
         session_id: str,
         on_partial_text: Callable[[str], None] | None,
+        *,
+        use_exposed_tools: bool = True,
+        tool_definitions: list[dict] | None = None,
     ) -> ExecutionPlan:
         all_messages = self._store.list_messages(session_id)
-
-        # Compute progressive-exposure subset BEFORE assembling context so the
-        # assembler can emit awareness-shaping fragments (Handoff 27) keyed to
-        # the current turn's visible/hidden reveal groups. Execution still
-        # routes through the full boundary; exposure only constrains which
-        # tools the provider sees this turn.
         decision: ExposureDecision | None = None
-        if self._capability_boundary is not None:
+        if use_exposed_tools and self._capability_boundary is not None:
             decision = compute_exposed_tools(
                 self._capability_boundary.registry, all_messages,
                 strategy=self._disclosure_strategy,
             )
             self._last_exposure_decision = decision
 
-        # Prefer the structured intermediate when the assembler exposes it so
-        # the debug envelope can project instruction fragments. Fall back to
-        # the plain assemble() path for assemblers without that shape.
         assembled_context = None
         if hasattr(self._assembler, "assemble_structured"):
             assembled_context = self._assembler.assemble_structured(
@@ -319,22 +311,16 @@ class SessionManager:
                 all_messages, system_prompt=session.system_prompt,
             )
 
-        if self._capability_boundary is not None and decision is not None:
+        if use_exposed_tools and self._capability_boundary is not None and decision is not None:
             full_definitions = [
                 d.model_dump() for d in self._capability_boundary.list_definitions()
             ]
             request.tool_definitions = filter_definitions_by_exposure(
                 full_definitions, decision.exposed_tool_names
             )
+        elif not use_exposed_tools:
+            request.tool_definitions = tool_definitions
 
-        # Build the envelope AFTER exposure has been applied to `request`,
-        # so snapshots match what the backend actually received. Each call
-        # to `_plan_with_tools` overwrites `_last_assembly_envelope`; the
-        # pairing invariant is that every assistant-message write site in
-        # `run_turn` snapshots the envelope immediately for the plan that
-        # was just produced, before the next `_plan_with_tools` call can
-        # overwrite it. If a future `build_envelope` extension reads
-        # `request.tool_definitions`, it will see the filtered list.
         self._last_assembly_envelope = build_envelope(
             assembler_name=type(self._assembler).__name__,
             transcript_message_count=len(all_messages),
@@ -344,6 +330,114 @@ class SessionManager:
         )
 
         return self._backend.plan_from_messages(request, on_partial_text=on_partial_text)
+
+    def _run_workflow_decision_message_flow(
+        self,
+        *,
+        session: Session,
+        session_id: str,
+        decision_request_package: dict[str, Any],
+        on_partial_text: Callable[[str], None] | None,
+    ) -> None:
+        decision_message = project_decision_request_to_message(decision_request_package)
+        turn_index = self._next_turn_index(session_id)
+        self._store.save_message(ConversationMessage(
+            message_id=make_message_id(),
+            session_id=session_id,
+            role=MessageRole.USER,
+            content=decision_message.content or "",
+            turn_index=turn_index,
+            created_at=datetime.now(timezone.utc),
+            metadata={
+                "origin": "runtime_core",
+                "message_type": "workflow_decision_request",
+                "workflow_run_id": decision_request_package["workflow_run_id"],
+                "decision_id": decision_request_package["decision_id"],
+                "workflow_name": decision_request_package["workflow_name"],
+            },
+        ))
+
+        decision_plan = self._plan_from_transcript(
+            session,
+            session_id,
+            on_partial_text,
+            use_exposed_tools=False,
+            tool_definitions=[
+                build_workflow_decision_tool_definition(decision_request_package)
+            ],
+        )
+        turn_index = self._next_turn_index(session_id)
+        response_metadata: dict[str, Any] = {
+            "source_backend": decision_plan.source_backend,
+            "model": decision_plan.model,
+            "message_type": "workflow_decision_response",
+            "workflow_run_id": decision_request_package["workflow_run_id"],
+            "decision_id": decision_request_package["decision_id"],
+            "workflow_name": decision_request_package["workflow_name"],
+        }
+        envelope = self._envelope_metadata_snapshot()
+        if envelope is not None:
+            response_metadata["assembly_envelope"] = envelope
+        if decision_plan.tool_requests:
+            response_metadata["tool_calls"] = [
+                tr.model_dump() for tr in decision_plan.tool_requests
+            ]
+        self._store.save_message(ConversationMessage(
+            message_id=make_message_id(),
+            session_id=session_id,
+            role=MessageRole.ASSISTANT,
+            content=decision_plan.final_text or "",
+            turn_index=turn_index,
+            created_at=datetime.now(timezone.utc),
+            metadata=response_metadata,
+        ))
+        if len(decision_plan.tool_requests) != 1:
+            raise WorkflowDecisionRoundtripError(
+                "workflow decision provider response must contain exactly one decision tool request"
+            )
+
+        decision_tool_request = decision_plan.tool_requests[0]
+        resume_request = build_workflow_resume_request_from_tool_request(
+            decision_request_package=decision_request_package,
+            tool_request=decision_tool_request,
+        )
+        workspace_root = workspace_root_from_boundary(self._capability_boundary)
+        if workspace_root is None:
+            raise CapabilityBoundaryUnavailableError(
+                "workflow decision resume requires a capability boundary workspace root"
+            )
+        persist_decision_response(
+            workspace_root=workspace_root,
+            decision_request_package=decision_request_package,
+            response=resume_request["decision_response"],
+        )
+        dispatch_result = dispatch_workflow_resume_branch(
+            workspace_root=workspace_root,
+            decision_request_package=decision_request_package,
+            resume_request=resume_request,
+        )
+        turn_index = self._next_turn_index(session_id)
+        self._store.save_message(ConversationMessage(
+            message_id=make_message_id(),
+            session_id=session_id,
+            role=MessageRole.TOOL,
+            content=render_workflow_branch_result(dispatch_result),
+            turn_index=turn_index,
+            created_at=datetime.now(timezone.utc),
+            metadata={
+                "tool_call_id": decision_tool_request.tool_call_id,
+                "tool_name": WORKFLOW_DECISION_TOOL_NAME,
+                "ok": True,
+                "governance_outcome": "runtime_workflow_decision",
+                "origin": "runtime_core",
+                "message_type": "workflow_resume_branch_result",
+                "workflow_run_id": dispatch_result["workflow_run_id"],
+                "decision_id": dispatch_result["decision_id"],
+                "selected_option_id": dispatch_result["selected_option_id"],
+                "branch_type": dispatch_result["branch_type"],
+                "status": dispatch_result["status"],
+            },
+        ))
 
     def _envelope_metadata_snapshot(self) -> dict | None:
         envelope = self._last_assembly_envelope
@@ -360,7 +454,6 @@ class SessionManager:
         discovery = registry.get(DISCOVERY_TOOL_NAME)
         if discovery is None:
             return
-        # The tool was constructed without a provider — attach ours now.
         if not hasattr(discovery, "_active_reveal_groups_provider"):
             return
         discovery._active_reveal_groups_provider = self._active_reveal_groups_snapshot
@@ -373,12 +466,6 @@ class SessionManager:
 
     @property
     def last_exposure_decision(self) -> ExposureDecision | None:
-        """Debug/inspection accessor for the most recent successful
-        staged-exposure computation. `None` means the manager has no
-        capability boundary configured (exposure filtering is a no-op
-        there). The attribute is not cleared between turns; operators can
-        read it after an exception to inspect the last-known decision.
-        """
         return self._last_exposure_decision
 
     def _next_turn_index(self, session_id: str) -> int:

@@ -12,19 +12,22 @@ Tests cover:
 from __future__ import annotations
 
 import json
-import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
-from unittest.mock import MagicMock
+from typing import Any, Callable
 
 import pytest
 
-from src.capability.boundary import CapabilityBoundary
+from src.capability.boundary import CapabilityBoundary, workspace_root_from_boundary
+from src.capability.mcp_servers.l3_workflow import (
+    DecisionRequestPackage,
+    SQLiteWorkflowRunStore,
+    WorkflowRun,
+)
+from src.capability.mcp_servers.l3_workflow.schemas import now_iso
+from src.capability.mcp_servers.l3_workflow.store import default_workflow_db_path
 from src.capability.models import (
     CapabilityLayer,
-    CapabilityResult,
-    GovernanceOutcome,
     ToolDefinition,
     ToolResult,
 )
@@ -49,6 +52,7 @@ from src.core.runtime.models import (
     TurnRequest,
 )
 from src.core.runtime.session import CapabilityBoundaryUnavailableError, SessionManager
+from src.core.runtime.workflow_decision import WORKFLOW_DECISION_TOOL_NAME
 from src.core.store.sqlite import SQLiteSessionStore
 
 
@@ -156,6 +160,19 @@ class TestCapabilityRegistry:
 
 
 class TestCapabilityBoundary:
+    def test_workspace_root_from_boundary_accepts_property_and_private_root(
+        self, workspace: Path
+    ) -> None:
+        boundary = CapabilityBoundary(CapabilityRegistry(), workspace)
+
+        assert workspace_root_from_boundary(boundary) == workspace.resolve()
+
+        class LegacyBoundary:
+            _workspace_root = workspace
+
+        assert workspace_root_from_boundary(LegacyBoundary()) == workspace
+        assert workspace_root_from_boundary(None) is None
+
     def test_governed_execution_success(self, workspace: Path) -> None:
         registry = CapabilityRegistry()
         registry.register(ReadFileTool(workspace))
@@ -276,6 +293,133 @@ class ToolCallBackend(ExecutionBackend):
         )
 
 
+class WorkflowDecisionBackend(ExecutionBackend):
+    def __init__(self, decision_response_text: str) -> None:
+        self.decision_response_text = decision_response_text
+        self.requests: list[TurnRequest] = []
+
+    @property
+    def backend_name(self) -> str:
+        return "workflow-decision-fake"
+
+    def plan_from_messages(
+        self,
+        request: TurnRequest,
+        *,
+        on_partial_text: Callable[[str], None] | None = None,
+    ) -> ExecutionPlan:
+        self.requests.append(request)
+        call_index = len(self.requests)
+        if call_index == 1:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="workflow-tool-call",
+                final_text=None,
+                model="fake",
+                tool_requests=[
+                    ToolRequest(
+                        tool_call_id="call_workflow",
+                        tool_name="native__fake_workflow",
+                        arguments={},
+                    )
+                ],
+            )
+        if call_index == 2:
+            return ExecutionPlan(
+                source_backend=self.backend_name,
+                plan_label="workflow-decision-response",
+                final_text=None,
+                model="fake",
+                tool_requests=[
+                    ToolRequest(
+                        tool_call_id="call_runtime_workflow_decision",
+                        tool_name=WORKFLOW_DECISION_TOOL_NAME,
+                        arguments=json.loads(self.decision_response_text),
+                    )
+                ],
+            )
+        return ExecutionPlan(
+            source_backend=self.backend_name,
+            plan_label="workflow-final",
+            final_text="workflow branch completed",
+            model="fake",
+        )
+
+
+class FakeWaitingWorkflowTool(Tool):
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        self.package = DecisionRequestPackage(
+            workflow_run_id="wfr_session_manager",
+            decision_id="dec_session_manager",
+            workflow_name="inspect_change_set_workflow",
+            message_type="decision_request",
+            factual_context={
+                "message_type": "fact_package",
+                "decision_posture": "non_decisional",
+                "diff_digest": {"run_id": "diff", "summary": {"file_count": 1}},
+                "impact_scope": {"run_id": "impact", "summary": {"changed_symbol_count": 0}},
+            },
+            artifact_refs=[],
+            admissible_options=[
+                {
+                    "option_id": "stop_and_report",
+                    "label": "Stop and report",
+                    "description": "Stop workflow progression and report current facts.",
+                    "branch_type": "stop",
+                    "payload": {},
+                }
+            ],
+            constraints=["admissible_options_are_not_recommendations"],
+            response_schema={
+                "type": "object",
+                "required": ["workflow_run_id", "decision_id", "selected_option_id"],
+            },
+            created_at=now_iso(),
+        )
+        store = SQLiteWorkflowRunStore(default_workflow_db_path(workspace))
+        try:
+            store.save_run(
+                WorkflowRun(
+                    workflow_run_id=self.package.workflow_run_id,
+                    workflow_name=self.package.workflow_name,
+                    cwd=str(workspace),
+                    request={},
+                    status="waiting_for_decision",
+                    started_at=self.package.created_at,
+                    current_decision_id=self.package.decision_id,
+                )
+            )
+            store.save_decision_request(self.package)
+        finally:
+            store.close()
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="native__fake_workflow",
+            description="Fake workflow that waits for provider decision.",
+            parameters={"type": "object", "properties": {}},
+        )
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        return CapabilityLayer.WORKFLOW
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        result = {
+            "ok": True,
+            "status": "waiting_for_decision",
+            "workflow_run_id": self.package.workflow_run_id,
+            "decision_request_package": self.package.to_dict(),
+        }
+        return ToolResult(
+            ok=True,
+            content=json.dumps(result),
+            data=result,
+        )
+
+
 class TestSessionManagerToolLoop:
     def _make_manager(
         self, workspace: Path, tool_calls_sequence: list[list[ToolRequest]]
@@ -334,7 +478,7 @@ class TestSessionManagerToolLoop:
         manager, store = self._make_manager(workspace, tool_requests)
         session = manager.create_session()
 
-        plan = manager.run_turn(session.session_id, "read missing.txt")
+        manager.run_turn(session.session_id, "read missing.txt")
         messages = store.list_messages(session.session_id)
 
         tool_result_msg = messages[2]
@@ -349,12 +493,55 @@ class TestSessionManagerToolLoop:
         manager, store = self._make_manager(workspace, tool_requests)
         session = manager.create_session()
 
-        plan = manager.run_turn(session.session_id, "read /etc/passwd")
+        manager.run_turn(session.session_id, "read /etc/passwd")
         messages = store.list_messages(session.session_id)
 
         tool_result_msg = messages[2]
         assert tool_result_msg.role == MessageRole.TOOL
         assert "governance denied" in tool_result_msg.content
+
+    def test_same_turn_overlapping_tool_calls_record_notice(self, workspace: Path) -> None:
+        tool_requests = [[
+            ToolRequest(
+                tool_call_id="call_overview",
+                tool_name="mcp__repo_scout__repo_scout_repository_overview",
+                arguments={},
+            ),
+            ToolRequest(
+                tool_call_id="call_status",
+                tool_name="mcp__git__git_status",
+                arguments={},
+            ),
+            ToolRequest(
+                tool_call_id="call_log",
+                tool_name="mcp__git__git_log",
+                arguments={},
+            ),
+        ]]
+        manager, store = self._make_manager(workspace, tool_requests)
+        session = manager.create_session()
+
+        manager.run_turn(session.session_id, "scout workspace")
+        messages = store.list_messages(session.session_id)
+
+        tool_call_msg = messages[1]
+        notice = tool_call_msg.metadata["tool_overlap_notice"]
+        assert notice == [{
+            "primary_tool": "mcp__repo_scout__repo_scout_repository_overview",
+            "overlapping_tools": ["mcp__git__git_status", "mcp__git__git_log"],
+            "relationship": "includes_summary_of",
+            "reason": (
+                "repository_overview includes git branch, clean/dirty state, "
+                "staged/unstaged/untracked counts, and recent commits"
+            ),
+            "policy": "record_only_execute_all_requested_tools",
+        }]
+        tool_result_names = [m.metadata.get("tool_name") for m in messages if m.role == MessageRole.TOOL]
+        assert tool_result_names == [
+            "mcp__repo_scout__repo_scout_repository_overview",
+            "mcp__git__git_status",
+            "mcp__git__git_log",
+        ]
 
     def test_no_capability_boundary_works_as_before(self, tmp_path: Path) -> None:
         """Without capability boundary, text-only turns work unchanged."""
@@ -403,6 +590,81 @@ class TestSessionManagerToolLoop:
         assert backend.last_request.tool_definitions is not None
         assert len(backend.last_request.tool_definitions) == 1
         assert backend.last_request.tool_definitions[0]["name"] == "native__read_file"
+
+    def test_workflow_wait_for_decision_roundtrip_is_transcript_canonical(
+        self,
+        workspace: Path,
+    ) -> None:
+        workflow_tool = FakeWaitingWorkflowTool(workspace)
+        decision_response = {
+            "workflow_run_id": workflow_tool.package.workflow_run_id,
+            "decision_id": workflow_tool.package.decision_id,
+            "selected_option_id": "stop_and_report",
+            "rationale_summary": "Stop after the bounded fact package.",
+        }
+        backend = WorkflowDecisionBackend(json.dumps(decision_response))
+        store = SQLiteSessionStore(db_path=":memory:")
+        registry = CapabilityRegistry()
+        registry.register(workflow_tool)
+        boundary = CapabilityBoundary(registry, workspace)
+        manager = SessionManager(
+            backend=backend,
+            store=store,
+            capability_boundary=boundary,
+        )
+        session = manager.create_session()
+
+        plan = manager.run_turn(session.session_id, "inspect this change set")
+
+        assert plan.final_text == "workflow branch completed"
+        assert len(backend.requests) == 3
+        assert backend.requests[1].tool_definitions is not None
+        assert backend.requests[1].tool_definitions[0]["name"] == WORKFLOW_DECISION_TOOL_NAME
+        assert "<workflow-decision-request" in (backend.requests[1].messages[-1].content or "")
+        assert "workflow_branch_stop_result" in (backend.requests[2].messages[-1].content or "")
+
+        messages = store.list_messages(session.session_id)
+        roles = [message.role for message in messages]
+        assert roles == [
+            MessageRole.USER,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+            MessageRole.USER,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+            MessageRole.ASSISTANT,
+        ]
+
+        workflow_tool_result = messages[2]
+        assert workflow_tool_result.metadata["workflow_decision"]["status"] == "waiting_for_decision"
+        assert workflow_tool_result.metadata["workflow_decision"]["decision_id"] == workflow_tool.package.decision_id
+
+        decision_request_msg = messages[3]
+        assert decision_request_msg.metadata["message_type"] == "workflow_decision_request"
+        assert decision_request_msg.metadata["origin"] == "runtime_core"
+        assert "<workflow-decision-request" in decision_request_msg.content
+
+        decision_response_msg = messages[4]
+        assert decision_response_msg.role == MessageRole.ASSISTANT
+        assert decision_response_msg.metadata["message_type"] == "workflow_decision_response"
+        assert decision_response_msg.metadata["tool_calls"][0]["tool_name"] == WORKFLOW_DECISION_TOOL_NAME
+        assert decision_response_msg.metadata["tool_calls"][0]["arguments"]["selected_option_id"] == "stop_and_report"
+
+        branch_result_msg = messages[5]
+        assert branch_result_msg.role == MessageRole.TOOL
+        assert branch_result_msg.metadata["tool_name"] == WORKFLOW_DECISION_TOOL_NAME
+        assert branch_result_msg.metadata["tool_call_id"] == "call_runtime_workflow_decision"
+        assert branch_result_msg.metadata["message_type"] == "workflow_resume_branch_result"
+        assert "workflow_branch_stop_result" in branch_result_msg.content
+
+        store_for_workflow = SQLiteWorkflowRunStore(default_workflow_db_path(workspace))
+        try:
+            workflow_run = store_for_workflow.get_run(workflow_tool.package.workflow_run_id)
+        finally:
+            store_for_workflow.close()
+        assert workflow_run is not None
+        assert workflow_run["status"] == "stopped"
+        assert workflow_run["decision_responses"][0]["selected_option_id"] == "stop_and_report"
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +859,7 @@ class TestAuditFindings:
         manager = SessionManager(backend=backend, store=store, capability_boundary=boundary)
         session = manager.create_session()
 
-        plan = manager.run_turn(session.session_id, "loop forever")
+        manager.run_turn(session.session_id, "loop forever")
         messages = store.list_messages(session.session_id)
 
         # The last TOOL message should be the sentinel
@@ -998,8 +1260,25 @@ class TestCLICapabilityWiring:
             "mcp__git__git_unstage",
             "mcp__git__git_checkout_branch",
             "mcp__pytest__run_pytest_structured",
+            "mcp__pytest__pytest_diagnose_failures",
+            "mcp__pytest__toolchain_get_run",
+            "mcp__pytest__toolchain_get_step",
+            "mcp__pytest__toolchain_read_artifact_region",
             "mcp__ruff__run_ruff_structured",
             "mcp__mypy__run_mypy_structured",
+            "mcp__code_intel__code_intel_repository_summary",
+            "mcp__code_intel__code_intel_find_symbols",
+            "mcp__code_intel__code_intel_file_context",
+            "mcp__code_intel__code_intel_export_fragment_summary",
+            "mcp__repo_scout__repo_scout_repository_overview",
+            "mcp__repo_scout__repo_scout_diff_digest",
+            "mcp__repo_scout__repo_scout_impact_scope",
+            "mcp__repo_scout__repo_scout_changed_context",
+            "mcp__repo_scout__toolchain_get_run",
+            "mcp__repo_scout__toolchain_get_step",
+            "mcp__repo_scout__toolchain_read_artifact_region",
+            "mcp__workflow__inspect_change_set_workflow",
+            "mcp__workflow__repo_recon_workflow",
             "mcp__process__run_process",
             "list_available_tools",
         }
@@ -1014,10 +1293,25 @@ class TestCLICapabilityWiring:
         names = {d.name for d in boundary.list_definitions()}
         for family in (
             "filesystem", "structured_filesystem", "structured_git",
-            "git", "pytest", "ruff", "mypy", "process"
+            "git", "pytest", "ruff", "mypy", "code_intel", "repo_scout", "workflow", "process"
         ):
             matching = [n for n in names if n.startswith(f"mcp__{family}__")]
             assert matching, f"shipped MCP family {family!r} not attached to default boundary"
+
+    def test_default_boundary_supports_layer_aware_initial_exposure(
+        self, workspace: Path
+    ) -> None:
+        from src.governance.disclosure import LayerAwareDisclosureStrategy
+        from src.operation.cli.harness import _build_capability_boundary
+
+        boundary = _build_capability_boundary(workspace)
+        decision = LayerAwareDisclosureStrategy().compute(boundary.registry, [])
+
+        assert "mcp__workflow__inspect_change_set_workflow" in decision.exposed_tool_names
+        assert "mcp__repo_scout__repo_scout_repository_overview" in decision.exposed_tool_names
+        assert "mcp__code_intel__code_intel_repository_summary" in decision.exposed_tool_names
+        assert "mcp__structured_filesystem__read_file_region" not in decision.exposed_tool_names
+        assert "mcp__filesystem__read_file" not in decision.exposed_tool_names
 
     def test_workspace_mcp_env_exports_orbit2_mcp_variables(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch

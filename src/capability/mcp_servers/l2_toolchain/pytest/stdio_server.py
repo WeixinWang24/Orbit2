@@ -10,6 +10,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 from src.capability.mcp_servers.l1_structured.filesystem import (
     stdio_server as structured_filesystem,
 )
@@ -383,7 +385,7 @@ def _toolchain_store() -> SQLiteToolchainRunStore:
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def run_pytest_structured(
     args: list[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
@@ -392,7 +394,7 @@ def run_pytest_structured(
     return _run_pytest_structured_result(args=args, max_chars=max_chars)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def pytest_diagnose_failures(
     args: list[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
@@ -406,7 +408,7 @@ def pytest_diagnose_failures(
     )
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def toolchain_get_run(run_id: str) -> dict[str, Any]:
     """Read a persisted L2 toolchain run by run_id."""
     store = _toolchain_store()
@@ -419,7 +421,7 @@ def toolchain_get_run(run_id: str) -> dict[str, Any]:
         store.close()
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def toolchain_get_step(run_id: str, step_id: str) -> dict[str, Any]:
     """Read a persisted L2 toolchain step by run_id and step_id."""
     store = _toolchain_store()
@@ -432,7 +434,7 @@ def toolchain_get_step(run_id: str, step_id: str) -> dict[str, Any]:
         store.close()
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def toolchain_read_artifact_region(
     run_id: str,
     artifact_id: str,

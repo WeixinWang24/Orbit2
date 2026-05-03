@@ -34,6 +34,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable
 
+from src.capability.models import CapabilityLayer
 from src.core.runtime.models import ConversationMessage, MessageRole
 
 if TYPE_CHECKING:
@@ -132,6 +133,26 @@ def _collect_registry_snapshot(
         tool_default[name] = tool.default_exposed
         tool_side_effect[name] = tool.side_effect_class
     return tool_group, tool_default, tool_side_effect
+
+
+def _collect_layer_registry_snapshot(
+    registry: CapabilityRegistry,
+) -> tuple[dict[str, str], dict[str, bool], dict[str, str], dict[str, CapabilityLayer], dict[str, bool]]:
+    tool_group: dict[str, str] = {}
+    tool_default: dict[str, bool] = {}
+    tool_side_effect: dict[str, str] = {}
+    tool_layer: dict[str, CapabilityLayer] = {}
+    tool_requires_approval: dict[str, bool] = {}
+    for name in registry.list_names():
+        tool = registry.get(name)
+        if tool is None:
+            continue
+        tool_group[name] = tool.reveal_group
+        tool_default[name] = tool.default_exposed
+        tool_side_effect[name] = tool.side_effect_class
+        tool_layer[name] = tool.capability_layer
+        tool_requires_approval[name] = tool.requires_approval
+    return tool_group, tool_default, tool_side_effect, tool_layer, tool_requires_approval
 
 
 def _add_defaults(
@@ -287,6 +308,95 @@ class BatchRevealDisclosureStrategy(DisclosureStrategy):
         return decision
 
 
+class LayerAwareDisclosureStrategy(DisclosureStrategy):
+    @property
+    def strategy_name(self) -> str:
+        return "layer_aware_v0"
+
+    def compute(
+        self, registry: CapabilityRegistry, messages: list[ConversationMessage]
+    ) -> ExposureDecision:
+        decision = ExposureDecision(strategy_name=self.strategy_name)
+        (
+            tool_group,
+            _tool_default,
+            tool_side_effect,
+            tool_layer,
+            tool_requires_approval,
+        ) = _collect_layer_registry_snapshot(registry)
+        available_groups = set(tool_group.values())
+        self._add_layer_defaults(
+            decision,
+            tool_group=tool_group,
+            tool_side_effect=tool_side_effect,
+            tool_layer=tool_layer,
+            tool_requires_approval=tool_requires_approval,
+        )
+
+        safe_context_groups = _compute_safe_context_groups(
+            tool_group=tool_group,
+            tool_side_effect=tool_side_effect,
+            tool_layer=tool_layer,
+            tool_requires_approval=tool_requires_approval,
+        )
+        for _msg, meta in _scan_tool_messages(messages):
+            single = meta.get(REVEAL_REQUEST_MARKER)
+            if isinstance(single, str) and single:
+                _widen_with_group(
+                    decision,
+                    tool_group,
+                    available_groups,
+                    single,
+                    reason_verb="layer_revealed_by",
+                )
+
+            batch = meta.get(REVEAL_BATCH_REQUEST_MARKER)
+            if isinstance(batch, list):
+                for requested in batch:
+                    if isinstance(requested, str) and requested:
+                        _widen_with_group(
+                            decision,
+                            tool_group,
+                            available_groups,
+                            requested,
+                            reason_verb="layer_batch_revealed_by",
+                        )
+
+            all_safe = meta.get(REVEAL_ALL_SAFE_REQUEST_MARKER)
+            if all_safe is True:
+                for group in sorted(safe_context_groups):
+                    _widen_with_group(
+                        decision,
+                        tool_group,
+                        available_groups,
+                        group,
+                        reason_verb="layer_all_safe_revealed",
+                    )
+        return decision
+
+    def _add_layer_defaults(
+        self,
+        decision: ExposureDecision,
+        *,
+        tool_group: dict[str, str],
+        tool_side_effect: dict[str, str],
+        tool_layer: dict[str, CapabilityLayer],
+        tool_requires_approval: dict[str, bool],
+    ) -> None:
+        for name, layer in tool_layer.items():
+            if layer not in {CapabilityLayer.TOOLCHAIN, CapabilityLayer.WORKFLOW}:
+                continue
+            if tool_side_effect.get(name) != "safe":
+                continue
+            if tool_requires_approval.get(name) is True:
+                continue
+            decision.exposed_tool_names.add(name)
+            decision.exposure_reason[name] = f"layer_default:{layer.value}"
+        for group in sorted({tool_group[name] for name in decision.exposed_tool_names}):
+            if group not in decision.active_reveal_groups:
+                decision.active_reveal_groups.append(group)
+
+
 def _compute_safe_groups(
     tool_group: dict[str, str], tool_side_effect: dict[str, str]
 ) -> set[str]:
@@ -304,6 +414,37 @@ def _compute_safe_groups(
     safe: set[str] = set()
     for group, members in group_members.items():
         if members and all(tool_side_effect.get(m) == "safe" for m in members):
+            safe.add(group)
+    return safe
+
+
+def _compute_safe_context_groups(
+    *,
+    tool_group: dict[str, str],
+    tool_side_effect: dict[str, str],
+    tool_layer: dict[str, CapabilityLayer],
+    tool_requires_approval: dict[str, bool],
+) -> set[str]:
+    group_members: dict[str, list[str]] = {}
+    for name, group in tool_group.items():
+        group_members.setdefault(group, []).append(name)
+    safe: set[str] = set()
+    for group, members in group_members.items():
+        if not members:
+            continue
+        if any(
+            tool_layer.get(member) not in {
+                CapabilityLayer.TOOLCHAIN,
+                CapabilityLayer.WORKFLOW,
+            }
+            for member in members
+        ):
+            continue
+        if all(
+            tool_side_effect.get(member) == "safe"
+            and tool_requires_approval.get(member) is False
+            for member in members
+        ):
             safe.add(group)
     return safe
 

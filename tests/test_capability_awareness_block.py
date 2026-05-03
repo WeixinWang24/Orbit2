@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from src.capability.boundary import CapabilityBoundary
 from src.capability.discovery import ListAvailableToolsTool
+from src.capability.models import CapabilityLayer, ToolDefinition, ToolResult
 from src.capability.registry import CapabilityRegistry
+from src.capability.tools.base import Tool
 from src.capability.tools import ReadFileTool, WriteFileTool
 from src.governance.capability_awareness_disclosure import (
     DEFAULT_CAPABILITY_AWARENESS_DISCLOSURE_POLICY,
@@ -22,11 +21,7 @@ from src.governance.capability_awareness_disclosure import (
     CapabilityAwarenessDisclosureDecision,
     CapabilityAwarenessDisclosurePolicy,
 )
-from src.governance.disclosure import (
-    BatchRevealDisclosureStrategy,
-    ExposureDecision,
-    SingleRevealDisclosureStrategy,
-)
+from src.governance.disclosure import ExposureDecision
 from src.knowledge import (
     CAPABILITY_AWARENESS_FRAGMENT_NAME,
     CAPABILITY_AWARENESS_POSTURE_TEXT,
@@ -54,6 +49,35 @@ def _registry_with_discovery_and_groups(tmp_path: Path) -> CapabilityRegistry:
     registry.register(WriteFileTool(tmp_path))      # reveal_group: native_fs_mutate, hidden
     registry.register(ListAvailableToolsTool(registry))  # reveal_group: discovery, default_exposed
     return registry
+
+
+class _AwarenessTool(Tool):
+    def __init__(self, name: str, group: str) -> None:
+        self._name = name
+        self._group = group
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self._name,
+            description=self._name,
+            parameters={"type": "object", "properties": {}},
+        )
+
+    @property
+    def reveal_group(self) -> str:
+        return self._group
+
+    @property
+    def default_exposed(self) -> bool:
+        return False
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        return CapabilityLayer.TOOLCHAIN
+
+    def execute(self) -> ToolResult:
+        return ToolResult(ok=True, content="ok")
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +145,33 @@ class TestCapabilityAwarenessCollector:
         assert snapshot.hidden_reveal_groups == ()
         assert snapshot.visible_tool_count == 0
 
+    def test_collect_includes_visible_relationship_hints(self) -> None:
+        registry = CapabilityRegistry()
+        registry.register(_AwarenessTool(
+            "mcp__repo_scout__repo_scout_repository_overview",
+            "mcp_repo_scout",
+        ))
+        registry.register(_AwarenessTool("mcp__git__git_status", "mcp_git_read"))
+        registry.register(_AwarenessTool("mcp__git__git_log", "mcp_git_read"))
+        decision = ExposureDecision(
+            exposed_tool_names={
+                "mcp__repo_scout__repo_scout_repository_overview",
+                "mcp__git__git_status",
+                "mcp__git__git_log",
+            },
+            active_reveal_groups=["mcp_repo_scout", "mcp_git_read"],
+            strategy_name="layer_aware_v0",
+        )
+
+        snapshot = CapabilityAwarenessCollector(registry).collect(
+            exposure_decision=decision
+        )
+
+        assert snapshot.relationship_hints
+        assert snapshot.relationship_hints[0]["primary_tool"] == (
+            "mcp__repo_scout__repo_scout_repository_overview"
+        )
+
 
 # ---------------------------------------------------------------------------
 # BasicCapabilityAwarenessDisclosurePolicy
@@ -174,6 +225,14 @@ class TestBuildFragment:
                 "mcp_fs_mutate": "MCP filesystem mutations (write / replace).",
                 "mcp_git_read": "MCP git read tools (status / diff / log).",
             },
+            relationship_hints=(
+                {
+                    "primary_tool": "mcp__repo_scout__repo_scout_repository_overview",
+                    "relationship": "includes_summary_of",
+                    "related_tools": ["mcp__git__git_status", "mcp__git__git_log"],
+                    "reason": "overview includes git facts",
+                },
+            ),
         )
 
     def test_fragment_identity_matches_constants(self) -> None:
@@ -208,6 +267,14 @@ class TestBuildFragment:
         )
         assert CAPABILITY_AWARENESS_POSTURE_TEXT in frag.content
 
+    def test_content_includes_relationship_hints(self) -> None:
+        frag = build_capability_awareness_fragment(
+            self._snap(), policy_name="test"
+        )
+        assert "relationship_hints (1)" in frag.content
+        assert "mcp__repo_scout__repo_scout_repository_overview" in frag.content
+        assert "mcp__git__git_status" in frag.content
+
     def test_metadata_carries_visible_and_hidden_lists(self) -> None:
         frag = build_capability_awareness_fragment(
             self._snap(), policy_name="basic_capability_awareness"
@@ -221,6 +288,9 @@ class TestBuildFragment:
         assert frag.metadata["hidden_reveal_groups"] == [
             "mcp_fs_mutate", "mcp_git_read"
         ]
+        assert frag.metadata["relationship_hints"][0]["relationship"] == (
+            "includes_summary_of"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +429,6 @@ class TestSession7b475ca42e77RegressionShape:
         self, tmp_path: Path
     ) -> None:
         registry = _registry_with_discovery_and_groups(tmp_path)
-        # First-turn exposure decision under single-reveal: only defaults are active
-        decision = SingleRevealDisclosureStrategy().compute(registry, [])
         assembler = StructuredContextAssembler(
             capability_awareness_collector=CapabilityAwarenessCollector(registry),
             capability_awareness_disclosure_policy=(

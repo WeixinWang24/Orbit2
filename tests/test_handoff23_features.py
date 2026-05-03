@@ -584,6 +584,24 @@ class TestFilesystemWideningHelpers:
         depths = {e["depth"] for e in r["entries"]}
         assert depths == {1}, "depth cap did not restrict traversal"
 
+    def test_directory_tree_skips_ignored_and_protected_paths(
+        self,
+        workspace: Path,
+    ) -> None:
+        (workspace / ".git").mkdir()
+        (workspace / ".git" / "HEAD").write_text("ref: main\n", encoding="utf-8")
+        (workspace / ".runtime").mkdir()
+        (workspace / ".runtime" / "state.json").write_text("{}", encoding="utf-8")
+        (workspace / "nested" / "__pycache__").mkdir()
+        (workspace / "nested" / "__pycache__" / "deep.pyc").write_bytes(b"cache")
+
+        r = fs_server._directory_tree_result(max_depth=3, max_entries=50)
+        paths = {e["path"] for e in r["entries"]}
+        assert ".git" not in paths
+        assert ".runtime" not in paths
+        assert "nested/__pycache__" not in paths
+        assert "nested/deep.py" in paths
+
     def test_read_multiple_files_partial_failure(self, workspace: Path) -> None:
         r = fs_server._read_multiple_files_result(["a.py", "does_not_exist.py"])
         ok = [x for x in r["results"] if x["ok"]]

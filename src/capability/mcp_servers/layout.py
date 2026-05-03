@@ -68,6 +68,27 @@ L2_TOOLCHAIN_MCP_SERVER_MODULES: tuple[McpServerModule, ...] = (
         module_path="src.capability.mcp_servers.l2_toolchain.mypy.stdio_server",
         legacy_module_path="src.capability.mcp_servers.mypy.stdio_server",
     ),
+    McpServerModule(
+        server_name="code_intel",
+        capability_layer=CapabilityLayer.TOOLCHAIN,
+        module_path="src.capability.mcp_servers.l2_toolchain.code_intel.stdio_server",
+        legacy_module_path="src.capability.mcp_servers.l2_toolchain.code_intel.stdio_server",
+    ),
+    McpServerModule(
+        server_name="repo_scout",
+        capability_layer=CapabilityLayer.TOOLCHAIN,
+        module_path="src.capability.mcp_servers.l2_toolchain.repo_scout.stdio_server",
+        legacy_module_path="src.capability.mcp_servers.l2_toolchain.repo_scout.stdio_server",
+    ),
+)
+
+L3_WORKFLOW_MCP_SERVER_MODULES: tuple[McpServerModule, ...] = (
+    McpServerModule(
+        server_name="workflow",
+        capability_layer=CapabilityLayer.WORKFLOW,
+        module_path="src.capability.mcp_servers.l3_workflow.stdio_server",
+        legacy_module_path="src.capability.mcp_servers.l3_workflow.stdio_server",
+    ),
 )
 
 OBSIDIAN_MCP_SERVER_MODULE = McpServerModule(
@@ -81,4 +102,5 @@ DEFAULT_WORKSPACE_MCP_SERVER_MODULES: tuple[McpServerModule, ...] = (
     *L0_RAW_MCP_SERVER_MODULES,
     *L1_STRUCTURED_MCP_SERVER_MODULES,
     *L2_TOOLCHAIN_MCP_SERVER_MODULES,
+    *L3_WORKFLOW_MCP_SERVER_MODULES,
 )

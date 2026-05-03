@@ -8,6 +8,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 from src.capability.models import is_protected_relative_path
 from src.capability.mcp_servers.filesystem import stdio_server as raw_filesystem
 
@@ -320,7 +322,7 @@ def _grep_scoped_result(
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def read_file_region(
     path: str,
     start_line: int,
@@ -340,7 +342,7 @@ def read_file_region(
     )
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def grep_scoped(
     pattern: str,
     path: str,

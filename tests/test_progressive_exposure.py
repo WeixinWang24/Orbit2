@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import pytest
 
@@ -43,10 +43,13 @@ from src.core.runtime.models import (
 from src.core.runtime.session import SessionManager
 from src.core.store.sqlite import SQLiteSessionStore
 from src.knowledge.exposure import (
-    ExposureDecision,
     collect_reveal_requests,
     compute_exposed_tools,
     filter_definitions_by_exposure,
+)
+from src.governance.disclosure import (
+    LayerAwareDisclosureStrategy,
+    REVEAL_ALL_SAFE_REQUEST_MARKER,
 )
 
 
@@ -142,6 +145,44 @@ class TestDiscoveryTool:
         assert "scoped grep" in GROUP_DESCRIPTIONS["mcp_structured_filesystem"]
         assert "revision file regions" in GROUP_DESCRIPTIONS["mcp_structured_git"]
 
+    def test_summary_includes_relationship_hints_for_visible_overlap_tools(self) -> None:
+        r = CapabilityRegistry()
+        r.register(_LayerTool(
+            "mcp__repo_scout__repo_scout_repository_overview",
+            "mcp_repo_scout",
+            CapabilityLayer.TOOLCHAIN,
+        ))
+        r.register(_LayerTool(
+            "mcp__git__git_status",
+            "mcp_git_read",
+            CapabilityLayer.TOOLCHAIN,
+        ))
+        r.register(_LayerTool(
+            "mcp__git__git_log",
+            "mcp_git_read",
+            CapabilityLayer.TOOLCHAIN,
+        ))
+        r.register(ListAvailableToolsTool(
+            r,
+            active_reveal_groups_provider=lambda: [
+                "discovery",
+                "mcp_repo_scout",
+                "mcp_git_read",
+            ],
+        ))
+
+        result = r.get(DISCOVERY_TOOL_NAME).execute()
+        hints = result.data["summary"]["relationship_hints"]
+        assert hints == [{
+            "primary_tool": "mcp__repo_scout__repo_scout_repository_overview",
+            "relationship": "includes_summary_of",
+            "related_tools": ["mcp__git__git_status", "mcp__git__git_log"],
+            "reason": (
+                "repository_overview includes git branch, clean/dirty state, "
+                "staged/unstaged/untracked counts, and recent commits"
+            ),
+        }]
+
     def test_reveal_request_sets_marker(self, tmp_path: Path) -> None:
         r = self._registry_with_mix(tmp_path)
         disco = r.get(DISCOVERY_TOOL_NAME)
@@ -184,6 +225,54 @@ def _msg(role: MessageRole, *, metadata: dict | None = None, content: str = "") 
         created_at=datetime.now(timezone.utc),
         metadata=metadata or {},
     )
+
+
+class _LayerTool(Tool):
+    def __init__(
+        self,
+        name: str,
+        group: str,
+        layer: CapabilityLayer,
+        *,
+        side_effect: str = "safe",
+        requires_approval: bool = False,
+    ) -> None:
+        self._name = name
+        self._group = group
+        self._layer = layer
+        self._side_effect = side_effect
+        self._requires_approval = requires_approval
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self._name,
+            description=self._name,
+            parameters={"type": "object", "properties": {}},
+        )
+
+    @property
+    def reveal_group(self) -> str:
+        return self._group
+
+    @property
+    def default_exposed(self) -> bool:
+        return False
+
+    @property
+    def side_effect_class(self) -> str:
+        return self._side_effect
+
+    @property
+    def requires_approval(self) -> bool:
+        return self._requires_approval
+
+    @property
+    def capability_layer(self) -> CapabilityLayer:
+        return self._layer
+
+    def execute(self) -> ToolResult:
+        return ToolResult(ok=True, content="ok")
 
 
 class TestExposureDecision:
@@ -258,6 +347,78 @@ class TestExposureDecision:
             _msg(MessageRole.TOOL, metadata={"reveal_request": "mcp_git_read"}),
         ]
         assert collect_reveal_requests(messages) == ["mcp_git_read", "native_fs_mutate"]
+
+    def test_layer_aware_defaults_expose_l2_l3_but_not_l0_l1(
+        self, tmp_path: Path
+    ) -> None:
+        r = CapabilityRegistry()
+        r.register(ReadFileTool(tmp_path))
+        r.register(_LayerTool(
+            "structured_read",
+            "mcp_structured_filesystem",
+            CapabilityLayer.STRUCTURED_PRIMITIVE,
+        ))
+        r.register(_LayerTool("repo_overview", "mcp_repo_scout", CapabilityLayer.TOOLCHAIN))
+        r.register(_LayerTool("inspect_changes", "mcp_workflow", CapabilityLayer.WORKFLOW))
+        r.register(ListAvailableToolsTool(r))
+
+        decision = LayerAwareDisclosureStrategy().compute(r, [])
+
+        assert "native__read_file" not in decision.exposed_tool_names
+        assert "structured_read" not in decision.exposed_tool_names
+        assert "repo_overview" in decision.exposed_tool_names
+        assert "inspect_changes" in decision.exposed_tool_names
+        assert "list_available_tools" in decision.exposed_tool_names
+        assert decision.strategy_name == "layer_aware_v0"
+
+    def test_layer_aware_all_safe_reveals_context_layers_only(
+        self, tmp_path: Path
+    ) -> None:
+        r = CapabilityRegistry()
+        r.register(ReadFileTool(tmp_path))
+        r.register(_LayerTool(
+            "structured_read",
+            "mcp_structured_filesystem",
+            CapabilityLayer.STRUCTURED_PRIMITIVE,
+        ))
+        r.register(_LayerTool("repo_overview", "mcp_repo_scout", CapabilityLayer.TOOLCHAIN))
+        messages = [
+            _msg(MessageRole.TOOL, metadata={
+                "tool_name": "list_available_tools",
+                "ok": True,
+                "governance_outcome": "allowed",
+                REVEAL_ALL_SAFE_REQUEST_MARKER: True,
+            }),
+        ]
+
+        decision = LayerAwareDisclosureStrategy().compute(r, messages)
+
+        assert "structured_read" not in decision.exposed_tool_names
+        assert "repo_overview" in decision.exposed_tool_names
+        assert "native__read_file" not in decision.exposed_tool_names
+
+    def test_layer_aware_explicit_reveal_can_grant_l1(
+        self, tmp_path: Path
+    ) -> None:
+        r = CapabilityRegistry()
+        r.register(_LayerTool(
+            "structured_read",
+            "mcp_structured_filesystem",
+            CapabilityLayer.STRUCTURED_PRIMITIVE,
+        ))
+        messages = [
+            _msg(MessageRole.TOOL, metadata={
+                "tool_name": "list_available_tools",
+                "ok": True,
+                "governance_outcome": "allowed",
+                "reveal_request": "mcp_structured_filesystem",
+            }),
+        ]
+
+        decision = LayerAwareDisclosureStrategy().compute(r, messages)
+
+        assert "structured_read" in decision.exposed_tool_names
+        assert decision.exposure_reason["structured_read"].startswith("layer_revealed_by:")
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +811,30 @@ class TestMcpRevealGroupConsistency:
             == "mcp_structured_git"
         )
 
+    def test_repo_scout_family(self, tmp_path: Path) -> None:
+        assert (
+            self._wrapper("repo_scout", "repo_scout_changed_context", side_effect="safe").reveal_group
+            == "mcp_repo_scout"
+        )
+        assert (
+            self._wrapper("repo_scout", "repo_scout_repository_overview", side_effect="safe").reveal_group
+            == "mcp_repo_scout"
+        )
+        assert (
+            self._wrapper("repo_scout", "repo_scout_diff_digest", side_effect="safe").reveal_group
+            == "mcp_repo_scout"
+        )
+        assert (
+            self._wrapper("repo_scout", "repo_scout_impact_scope", side_effect="safe").reveal_group
+            == "mcp_repo_scout"
+        )
+
+    def test_code_intel_family(self, tmp_path: Path) -> None:
+        assert (
+            self._wrapper("code_intel", "code_intel_find_symbols", side_effect="safe").reveal_group
+            == "mcp_code_intel"
+        )
+
     def test_unknown_server_falls_back_to_mcp_prefix(self, tmp_path: Path) -> None:
         assert self._wrapper("foosvc", "do_thing", side_effect="safe").reveal_group == "mcp_foosvc"
 
@@ -697,6 +882,14 @@ class TestMcpCapabilityLayerClassification:
         ("server", "tool"),
         [
             ("pytest", "run_pytest_structured"),
+            ("code_intel", "code_intel_repository_summary"),
+            ("code_intel", "code_intel_find_symbols"),
+            ("code_intel", "code_intel_file_context"),
+            ("code_intel", "code_intel_export_fragment_summary"),
+            ("repo_scout", "repo_scout_repository_overview"),
+            ("repo_scout", "repo_scout_diff_digest"),
+            ("repo_scout", "repo_scout_impact_scope"),
+            ("repo_scout", "repo_scout_changed_context"),
             ("ruff", "run_ruff_structured"),
             ("mypy", "run_mypy_structured"),
         ],

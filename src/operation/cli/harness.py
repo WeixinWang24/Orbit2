@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Sequence
 
 from src.capability.boundary import CapabilityBoundary
 from src.capability.discovery import ListAvailableToolsTool
@@ -26,6 +27,7 @@ from src.governance.approval import ApprovalGate, ApprovalMemory
 from src.governance.capability_awareness_disclosure import (
     BasicCapabilityAwarenessDisclosurePolicy,
 )
+from src.governance.disclosure import LayerAwareDisclosureStrategy
 from src.governance.policies import RevealGroupSessionApprovalPolicy
 from src.governance.runtime_context_disclosure import (
     BasicSelfLocationDisclosurePolicy,
@@ -42,7 +44,6 @@ from src.operation.cli.composer import (
     ComposerAction,
     PageDownAction,
     PageUpAction,
-    display_width,
 )
 from src.operation.cli.markdown import (
     render_markdown_for_terminal,
@@ -328,46 +329,26 @@ def _run_interactive(
             _handle_reset_permission(boundary, active_session_id)
             continue
 
-        # Regular user input — send to model. Assistant prefix lives on its
-        # own line so the streamed body below lands on a clean row at col 0,
-        # which in turn lets the post-stream erase (`\x1b[<N>F\x1b[J`) wipe
-        # exactly the region we wrote without touching the prefix.
         _write(f"\n{ACCENT_ASSISTANT}{BOLD}assistant \u276f{RESET}\n")
 
         is_tty = sys.stdout.isatty()
         term_width = _term_width() if is_tty else 0
         last_len = 0
-        # Visual geometry of the streamed region, measured from the row
-        # right after the `assistant ❯` line. `stream_rows` counts full
-        # line breaks crossed; `stream_col` is the current column. After
-        # the turn closes on a TTY we move cursor up `stream_rows` lines
-        # and clear forward, which removes the streamed raw text from the
-        # viewport before the rendered final text is emitted. An earlier
-        # revision tried DEC `\x1b7`/`\x1b8` save/restore here, but the
-        # anchor became unreliable once streaming scrolled the viewport
-        # and the rendered re-print landed below retained raw stream.
-        stream_rows = 0
-        stream_col = 0
+        status_frames = ("-", "\\", "|", "/")
+        status_index = 0
+        status_shown = False
 
         def on_partial(accumulated: str) -> None:
-            nonlocal last_len, stream_rows, stream_col
+            nonlocal last_len, status_index, status_shown
             delta = accumulated[last_len:]
             last_len = len(accumulated)
-            _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
             if is_tty:
-                for ch in delta:
-                    if ch == "\n":
-                        stream_rows += 1
-                        stream_col = 0
-                    elif ch == "\r":
-                        stream_col = 0
-                    else:
-                        w = display_width(ch)
-                        if term_width > 0 and stream_col + w > term_width:
-                            stream_rows += 1
-                            stream_col = w
-                        else:
-                            stream_col += w
+                frame = status_frames[status_index % len(status_frames)]
+                status_index += 1
+                status_shown = True
+                _write(f"\r\x1b[K{DIM}thinking {frame} {last_len} chars{RESET}")
+            else:
+                _write(f"{CONTENT_ASSISTANT}{delta}{RESET}")
 
         plan = manager.run_turn(active_session_id, stripped, on_partial_text=on_partial)
 
@@ -376,14 +357,7 @@ def _run_interactive(
                 plan.final_text, base_color=CONTENT_ASSISTANT,
             )
             if is_tty and last_len > 0:
-                # `\x1b[NF` moves cursor up N lines to column 0 (clamped
-                # at the top of the viewport by every modern terminal);
-                # `\x1b[J` clears from cursor to end of screen. Net
-                # effect: streaming stays visible during generation and
-                # is then replaced in place by the rendered final text.
-                if stream_rows > 0:
-                    _write(f"\x1b[{stream_rows}F\x1b[J")
-                else:
+                if status_shown:
                     _write("\r\x1b[K")
                 _write(f"{CONTENT_ASSISTANT}{_wrap_for_tty(rendered, term_width)}{RESET}")
             elif last_len == 0:
@@ -393,6 +367,8 @@ def _run_interactive(
             # them as the canonical output for piped consumers.
         elif last_len == 0:
             _write(f"{ACCENT_ERROR}[no response]{RESET}")
+        elif is_tty and status_shown:
+            _write("\r\x1b[K")
 
         if plan.tool_requests:
             _write("\n")
@@ -578,7 +554,7 @@ def _show_history(manager: SessionManager, session_id: str) -> None:
     _write(f"{divider(width)}\n\n")
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Orbit2 CLI")
     parser.add_argument(
         "--backend", "-b",
@@ -617,7 +593,7 @@ def main() -> None:
             "Overrides .runtime/agent_runtime.toml [obsidian].vault_root."
         ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     runtime_root = resolve_runtime_root(args.runtime_root)
     db_path = default_db_path(runtime_root)
@@ -660,6 +636,7 @@ def main() -> None:
             store=store,
             assembler=assembler,
             capability_boundary=boundary,
+            disclosure_strategy=LayerAwareDisclosureStrategy(),
         )
 
         if args.list_sessions:

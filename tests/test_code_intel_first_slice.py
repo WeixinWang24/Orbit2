@@ -6,6 +6,8 @@ from src.config.runtime import code_intel_db_path
 from src.module.code_intel import (
     CodeIntelIndexer,
     CodeIntelQuery,
+    CodeFragmentEdgeKind,
+    CodeFragmentNodeKind,
     EdgeKind,
     PythonAstAnalyzer,
     SQLiteCodeIntelStore,
@@ -83,6 +85,74 @@ def test_indexer_persists_summary_and_symbol_queries(tmp_path: Path) -> None:
         assert matches[0].qualified_name == "app.main"
         assert query.find_symbols(repo_id="repo", kind=SymbolKind.FUNCTION)[0].name == "main"
         assert query.find_symbols(repo_id="repo", path_prefix="app")[0].file_path == "app.py"
+        assert query.list_edges(repo_id="repo", file_paths=["app.py"]) == []
+    finally:
+        store.close()
+
+
+def test_query_lists_edges_for_file_paths(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    write(repo / "app.py", "from pkg.service import run\n\ndef main():\n    run()\n")
+    write(repo / "other.py", "import os\n")
+    store = SQLiteCodeIntelStore(tmp_path / "code_intel.db")
+    try:
+        CodeIntelIndexer(store).index_repo(repo_id="repo", root=repo)
+        query = CodeIntelQuery(store)
+
+        app_edges = query.list_edges(repo_id="repo", file_paths=["app.py"])
+        assert [e.target_name for e in app_edges] == ["pkg.service.run", "run"]
+        imports = query.list_edges(repo_id="repo", kind=EdgeKind.IMPORTS)
+        assert [e.target_name for e in imports] == ["pkg.service.run", "os"]
+        target_edges = query.find_edges_by_target_names(
+            repo_id="repo",
+            target_names=["run", "os"],
+        )
+        assert [e.target_name for e in target_edges] == ["os", "run"]
+    finally:
+        store.close()
+
+
+def test_query_exports_detached_code_fragment(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    write(repo / "app.py", "from pkg.service import run\n\ndef main():\n    run()\n")
+    store = SQLiteCodeIntelStore(tmp_path / "code_intel.db")
+    try:
+        CodeIntelIndexer(store).index_repo(repo_id="repo", root=repo, label="Fixture")
+        fragment = CodeIntelQuery(store).export_code_fragment("repo")
+
+        assert fragment is not None
+        assert fragment.repo_id == "repo"
+        assert fragment.source.kind == "code_intel"
+        assert fragment.summary["file_count"] == 1
+        assert fragment.summary["symbol_count"] == 2
+        assert fragment.summary["edge_count"] == 2
+
+        node_kinds = {node.kind for node in fragment.nodes}
+        assert node_kinds == {
+            CodeFragmentNodeKind.REPOSITORY,
+            CodeFragmentNodeKind.FILE,
+            CodeFragmentNodeKind.SYMBOL,
+        }
+
+        repository_node = next(
+            node for node in fragment.nodes if node.kind == CodeFragmentNodeKind.REPOSITORY
+        )
+        file_node = next(node for node in fragment.nodes if node.kind == CodeFragmentNodeKind.FILE)
+        main_node = next(
+            node for node in fragment.nodes if node.properties.get("qualified_name") == "app.main"
+        )
+
+        contains_edges = [e for e in fragment.edges if e.kind == CodeFragmentEdgeKind.CONTAINS]
+        defines_edges = [e for e in fragment.edges if e.kind == CodeFragmentEdgeKind.DEFINES]
+        import_edges = [e for e in fragment.edges if e.kind == CodeFragmentEdgeKind.IMPORTS]
+        call_edges = [e for e in fragment.edges if e.kind == CodeFragmentEdgeKind.CALLS]
+
+        assert contains_edges[0].source_node_id == repository_node.node_id
+        assert contains_edges[0].target_node_id == file_node.node_id
+        assert any(edge.target_node_id == main_node.node_id for edge in defines_edges)
+        assert import_edges[0].target_name == "pkg.service.run"
+        assert call_edges[0].target_name == "run"
+        assert call_edges[0].source_node_id == main_node.node_id
     finally:
         store.close()
 

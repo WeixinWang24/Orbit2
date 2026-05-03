@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from src.capability.models import CapabilityLayer
 from src.capability.mcp.governance import (
+    CODE_INTEL_READ_TOOLS,
     GIT_READ_TOOLS,
     MYPY_READ_TOOLS,
     OBSIDIAN_READ_TOOLS,
     PYTEST_READ_TOOLS,
+    REPO_SCOUT_READ_TOOLS,
     RUFF_READ_TOOLS,
     STRUCTURED_FILESYSTEM_READ_TOOLS,
     STRUCTURED_GIT_READ_TOOLS,
+    WORKFLOW_READ_TOOLS,
 )
 
 
@@ -41,6 +44,12 @@ def classify_mcp_capability_layer(
         return CapabilityLayer.TOOLCHAIN
     if server == "mypy" and tool in MYPY_READ_TOOLS:
         return CapabilityLayer.TOOLCHAIN
+    if server == "code_intel" and tool in CODE_INTEL_READ_TOOLS:
+        return CapabilityLayer.TOOLCHAIN
+    if server == "repo_scout" and tool in REPO_SCOUT_READ_TOOLS:
+        return CapabilityLayer.TOOLCHAIN
+    if server == "workflow" and tool in WORKFLOW_READ_TOOLS:
+        return CapabilityLayer.WORKFLOW
 
     if server == "structured_filesystem" and tool in STRUCTURED_FILESYSTEM_READ_TOOLS:
         return CapabilityLayer.STRUCTURED_PRIMITIVE

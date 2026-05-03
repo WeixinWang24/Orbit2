@@ -196,6 +196,57 @@ class TestPytestFamilyGovernance:
         assert g == DEFAULT_MCP_GOVERNANCE
 
 
+class TestRepoScoutFamilyGovernance:
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "repo_scout_repository_overview",
+            "repo_scout_diff_digest",
+            "repo_scout_impact_scope",
+            "repo_scout_changed_context",
+            "toolchain_get_run",
+            "toolchain_get_step",
+            "toolchain_read_artifact_region",
+        ],
+    )
+    def test_repo_scout_tools_are_safe(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(server_name="repo_scout", original_tool_name=tool)
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+
+    def test_unknown_repo_scout_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="repo_scout",
+            original_tool_name="repo_scout_mutate",
+        )
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
+class TestCodeIntelFamilyGovernance:
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "code_intel_repository_summary",
+            "code_intel_find_symbols",
+            "code_intel_file_context",
+            "code_intel_export_fragment_summary",
+        ],
+    )
+    def test_code_intel_tools_are_safe(self, tool: str) -> None:
+        g = resolve_mcp_tool_governance(server_name="code_intel", original_tool_name=tool)
+        assert g["side_effect_class"] == "safe"
+        assert g["requires_approval"] is False
+        assert g["governance_policy_group"] == "system_environment"
+
+    def test_unknown_code_intel_tool_falls_back(self) -> None:
+        g = resolve_mcp_tool_governance(
+            server_name="code_intel",
+            original_tool_name="code_intel_mutate",
+        )
+        assert g == DEFAULT_MCP_GOVERNANCE
+
+
 class TestRuffFamilyGovernance:
     def test_run_ruff_structured_is_safe(self) -> None:
         g = resolve_mcp_tool_governance(server_name="ruff", original_tool_name="run_ruff_structured")

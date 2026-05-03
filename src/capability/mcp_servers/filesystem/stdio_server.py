@@ -25,6 +25,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from src.capability.mcp_servers.timing import timed_mcp_tool
+
 from src.capability.models import is_protected_relative_path
 
 SERVER_NAME = "filesystem"
@@ -41,8 +43,15 @@ DEFAULT_MAX_TREE_ENTRIES = 500
 DEFAULT_MAX_MULTI_READ_FILES = 20
 GREP_IGNORED_PARTS_ENV = "ORBIT2_MCP_FS_GREP_IGNORED_PARTS"
 GREP_IGNORED_SUFFIXES_ENV = "ORBIT2_MCP_FS_GREP_IGNORED_SUFFIXES"
+TREE_IGNORED_PARTS_ENV = "ORBIT2_MCP_FS_TREE_IGNORED_PARTS"
+TREE_IGNORED_SUFFIXES_ENV = "ORBIT2_MCP_FS_TREE_IGNORED_SUFFIXES"
 DEFAULT_GREP_IGNORED_PARTS = "__pycache__"
 DEFAULT_GREP_IGNORED_SUFFIXES = ".pyc,.pyo"
+DEFAULT_TREE_IGNORED_PARTS = (
+    ".git,.mypy_cache,.pytest_cache,.runtime,.venv,__pycache__,"
+    "build,dist,node_modules,target,venv"
+)
+DEFAULT_TREE_IGNORED_SUFFIXES = ".pyc,.pyo"
 
 
 def _workspace_root() -> Path:
@@ -98,6 +107,14 @@ def _grep_ignored_parts() -> frozenset[str]:
 
 def _grep_ignored_suffixes() -> frozenset[str]:
     return _csv_env_values(GREP_IGNORED_SUFFIXES_ENV, DEFAULT_GREP_IGNORED_SUFFIXES)
+
+
+def _tree_ignored_parts() -> frozenset[str]:
+    return _csv_env_values(TREE_IGNORED_PARTS_ENV, DEFAULT_TREE_IGNORED_PARTS)
+
+
+def _tree_ignored_suffixes() -> frozenset[str]:
+    return _csv_env_values(TREE_IGNORED_SUFFIXES_ENV, DEFAULT_TREE_IGNORED_SUFFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +453,12 @@ def _is_grep_ignored_path(path: Path) -> bool:
     return any(part in ignored_parts for part in path.parts) or path.suffix in ignored_suffixes
 
 
+def _is_tree_ignored_path(path: Path) -> bool:
+    ignored_parts = _tree_ignored_parts()
+    ignored_suffixes = _tree_ignored_suffixes()
+    return any(part in ignored_parts for part in path.parts) or path.suffix in ignored_suffixes
+
+
 def _directory_tree_result(
     path: str = ".",
     *,
@@ -469,6 +492,10 @@ def _directory_tree_result(
                 rel = child.relative_to(workspace_root).as_posix()
             except ValueError:
                 continue
+            if is_protected_relative_path(rel) is not None:
+                continue
+            if _is_tree_ignored_path(Path(rel)):
+                continue
             entry_kind = "directory" if child.is_dir() else ("file" if child.is_file() else "other")
             entries.append({"path": rel, "depth": depth, "kind": entry_kind})
             if child.is_dir():
@@ -482,6 +509,8 @@ def _directory_tree_result(
         "entries": entries,
         "entry_count": len(entries),
         "truncated": len(entries) >= entries_cap,
+        "ignored_parts": sorted(_tree_ignored_parts()),
+        "ignored_suffixes": sorted(_tree_ignored_suffixes()),
     }
 
 
@@ -579,55 +608,55 @@ def _list_directory_with_sizes_result(
 mcp = FastMCP(SERVER_NAME)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def read_file(path: str) -> dict[str, Any]:
     """Read a workspace-relative text file. Returns up to 64 KiB."""
     return _read_file_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def list_directory(path: str) -> dict[str, Any]:
     """List entries under a workspace-relative directory (first 200)."""
     return _list_directory_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def get_file_info(path: str) -> dict[str, Any]:
     """Return size / mtime / kind for a workspace-relative path."""
     return _get_file_info_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def write_file(path: str, content: str) -> dict[str, Any]:
     """Write UTF-8 text to a workspace-relative path. Creates parent dirs."""
     return _write_file_result(path, content)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def replace_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
     """Replace the first occurrence of `old_text` with `new_text`."""
     return _replace_in_file_result(path, old_text, new_text)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def replace_all_in_file(path: str, old_text: str, new_text: str) -> dict[str, Any]:
     """Replace ALL occurrences of `old_text` with `new_text`. Returns count."""
     return _replace_all_in_file_result(path, old_text, new_text)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def create_directory(path: str) -> dict[str, Any]:
     """Create a workspace-relative directory (with parents). Idempotent."""
     return _create_directory_result(path)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def move_file(source: str, destination: str) -> dict[str, Any]:
     """Move/rename a file inside the workspace. Creates destination parent dirs."""
     return _move_file_result(source, destination)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def glob(
     pattern: str,
     path: str = ".",
@@ -637,7 +666,7 @@ def glob(
     return _glob_result(pattern, path=path, max_results=max_results)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def search_files(
     name_pattern: str,
     path: str = ".",
@@ -647,7 +676,7 @@ def search_files(
     return _search_files_result(name_pattern, path=path, max_results=max_results)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def grep(
     pattern: str,
     path: str = ".",
@@ -662,7 +691,7 @@ def grep(
     )
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def directory_tree(
     path: str = ".",
     max_depth: int = DEFAULT_MAX_TREE_DEPTH,
@@ -672,7 +701,7 @@ def directory_tree(
     return _directory_tree_result(path, max_depth=max_depth, max_entries=max_entries)
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def read_multiple_files(
     paths: list[str],
     max_bytes_per_file: int = DEFAULT_MAX_READ_BYTES,
@@ -684,7 +713,7 @@ def read_multiple_files(
     )
 
 
-@mcp.tool()
+@timed_mcp_tool(mcp, SERVER_NAME)
 def list_directory_with_sizes(
     path: str,
     max_entries: int = DEFAULT_MAX_DIRECTORY_ENTRIES,

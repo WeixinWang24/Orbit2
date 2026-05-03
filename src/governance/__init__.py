@@ -16,6 +16,7 @@ from src.governance.disclosure import (
     BatchRevealDisclosureStrategy,
     DisclosureStrategy,
     ExposureDecision,
+    LayerAwareDisclosureStrategy,
     SingleRevealDisclosureStrategy,
 )
 from src.governance.policies import RevealGroupSessionApprovalPolicy
@@ -38,6 +39,7 @@ __all__ = [
     "DisclosureStrategy",
     "SingleRevealDisclosureStrategy",
     "BatchRevealDisclosureStrategy",
+    "LayerAwareDisclosureStrategy",
     "ExposureDecision",
     "DEFAULT_DISCLOSURE_STRATEGY",
     "DISCLOSURE_MARKER_KEYS",

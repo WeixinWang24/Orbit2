@@ -59,6 +59,18 @@ class TestLayeredMcpServerLayout:
         assert modules["pytest"].module_path.endswith(
             "mcp_servers.l2_toolchain.pytest.stdio_server"
         )
+        assert modules["code_intel"].capability_layer == CapabilityLayer.TOOLCHAIN
+        assert modules["code_intel"].module_path.endswith(
+            "mcp_servers.l2_toolchain.code_intel.stdio_server"
+        )
+        assert modules["repo_scout"].capability_layer == CapabilityLayer.TOOLCHAIN
+        assert modules["repo_scout"].module_path.endswith(
+            "mcp_servers.l2_toolchain.repo_scout.stdio_server"
+        )
+        assert modules["workflow"].capability_layer == CapabilityLayer.WORKFLOW
+        assert modules["workflow"].module_path.endswith(
+            "mcp_servers.l3_workflow.stdio_server"
+        )
 
     def test_layered_entrypoint_modules_reuse_legacy_mcp_objects(self) -> None:
         from src.capability.mcp_servers import DEFAULT_WORKSPACE_MCP_SERVER_MODULES
@@ -179,6 +191,25 @@ class TestMcpToolWrapper:
         assert wrapper.side_effect_class == "unknown"
         assert wrapper.requires_approval is True
         assert wrapper.environment_check_kind == "none"
+
+    def test_workflow_tool_classifies_as_l3(self) -> None:
+        descriptor = _make_descriptor(
+            server="workflow",
+            name="inspect_change_set_workflow",
+        )
+        wrapper = McpToolWrapper(
+            descriptor=descriptor,
+            client=_StubMcpClient([]),
+            governance={
+                "side_effect_class": "safe",
+                "requires_approval": False,
+                "governance_policy_group": "system_environment",
+                "environment_check_kind": "none",
+            },
+        )
+
+        assert wrapper.reveal_group == "mcp_workflow"
+        assert wrapper.capability_layer == CapabilityLayer.WORKFLOW
 
     def test_execute_delegates_to_client_with_original_name(self) -> None:
         descriptor = _make_descriptor()
